@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102b49">
+  <title>岡山保佑一定好天氣｜旅遊 Schedule</title>
+  <?!= include_('Styles'); ?>
+</head>
+<body>
+  <header class="hero">
+    <div class="shell hero-content">
+      <div class="eyebrow">JAPAN TRIP · TRAVEL SCHEDULE</div>
+      <h1>岡山保佑一定好天氣</h1>
+      <p class="hero-subtitle">岡山・倉敷・姬路・神戶，還有尾道的景點備忘。</p>
+      <div class="hero-meta">
+        <span class="meta-chip" id="trip-dates">讀取行程日期中...</span>
+        <span class="meta-chip" id="trip-hotels">住宿：讀取中...</span>
+        <span class="meta-chip">航班：IT714 / IT715</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="nav-wrap">
+    <nav class="nav shell" aria-label="頁面導覽">
+      <a href="#schedule" target="_self">行程</a>
+      <a href="#spots" target="_self">景點清單</a>
+      <a href="#food" target="_self">餐飲</a>
+    </nav>
+  </div>
+
+  <main class="shell">
+    <section id="schedule" class="section">
+      <div class="section-heading">
+        <h2>每日行程</h2>
+        <p>資料由 Google Sheet 的 schedule 分頁即時讀取。空白日期會保留為尚未安排。</p>
+      </div>
+      <div id="schedule-grid" class="schedule-grid">
+        <div class="loading">正在讀取行程...</div>
+      </div>
+      <div id="schedule-notes"></div>
+    </section>
+
+    <section id="spots" class="section">
+      <div class="section-heading">
+        <h2>景點清單</h2>
+        <p>整合所有名稱以 spot 結尾的分頁中的景點、地圖與參考資料。</p>
+      </div>
+      <div id="spot-groups" class="spot-groups">
+        <div class="loading">正在讀取景點...</div>
+      </div>
+    </section>
+
+    <section id="food" class="section">
+      <div class="section-heading">
+        <h2>餐飲</h2>
+        <p>對應 Google Sheet 的 food 分頁。</p>
+      </div>
+      <div id="food-content">
+        <div class="food-empty"><div class="food-mark">—</div><p>正在讀取餐飲資料...</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">最後更新：<span id="updated-at">讀取中...</span></div>
+  </footer>
+
+  <?!= include_('TripRenderer'); ?>
+  <?!= include_('App'); ?>
+  <?!= include_('Maps'); ?>
+</body>
+</html>

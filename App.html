@@ -1,0 +1,21 @@
+  <script>
+    function showError(error) {
+      const message = error && error.message ? error.message : String(error || '未知錯誤');
+      console.error('讀取旅遊資料失敗：', error);
+      document.getElementById('schedule-grid').innerHTML = `<div class="error-box">資料讀取失敗：${escapeHtml(message)}</div>`;
+      document.getElementById('spot-groups').innerHTML = '';
+      document.getElementById('food-content').innerHTML = '';
+      const hotelChip = document.getElementById('trip-hotels');
+      if (hotelChip) hotelChip.textContent = '住宿：讀取失敗';
+    }
+
+    function loadTripData() {
+      removeLegacyKobeSection();
+      google.script.run
+        .withSuccessHandler(renderTrip)
+        .withFailureHandler(showError)
+        .getTripData();
+    }
+
+    loadTripData();
+  </script>

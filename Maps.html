@@ -1,0 +1,134 @@
+  <script>
+    // Optional enhancement: independent of the data-loading script above.
+    (function () {
+      var mapSequence = 0;
+      function normalizeName(value) {
+        return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+      }
+
+      function plainName(element) {
+        return Array.from(element.childNodes).filter(function (node) {
+          return !node.hasAttribute || !node.hasAttribute('data-trip-map');
+        }).map(function (node) { return node.textContent; }).join(' ').trim();
+      }
+
+      function routeUrl(origin, destination) {
+        var params = new URLSearchParams({
+          api: '1',
+          origin: origin + ' 日本',
+          destination: destination + ' 日本',
+          travelmode: 'transit'
+        });
+        return 'https://www.google.com/maps/dir/?' + params.toString();
+      }
+
+      function addDayRoutes(knownNames) {
+        document.querySelectorAll('.day-card').forEach(function (day) {
+          var stops = [];
+          day.querySelectorAll('.event').forEach(function (event) {
+            var name = knownNames.get(normalizeName(plainName(event.querySelector('.event-text'))));
+            if (name) stops.push({ name: name, event: event });
+          });
+          stops.slice(0, -1).forEach(function (stop, index) {
+            if (stop.event.querySelector('.transit-route')) return;
+            var destination = stops[index + 1].name;
+            var link = document.createElement('a');
+            link.className = 'transit-route';
+            link.href = routeUrl(stop.name, destination);
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = '大眾運輸 → ' + destination;
+            link.setAttribute('aria-label', '查看 ' + stop.name + ' 到 ' + destination + ' 的大眾運輸路線');
+            stop.event.appendChild(link);
+          });
+        });
+      }
+
+      function addMapLinks() {
+        var knownNames = new Map();
+        document.querySelectorAll('.spot-name').forEach(function (place) {
+          var chinese = Array.from(place.childNodes).filter(function (node) {
+            return node.nodeType === 3;
+          }).map(function (node) { return node.textContent; }).join('').trim();
+          var english = place.querySelector('.spot-en');
+          [chinese, english ? english.textContent : ''].forEach(function (name) {
+            if (name.trim()) knownNames.set(normalizeName(name), chinese || name.trim());
+          });
+        });
+        // Food rows use their first non-empty cell as the restaurant name.
+        document.querySelectorAll('.food-row .food-cell:first-child').forEach(function (cell) {
+          var name = plainName(cell);
+          if (name && !/^(名稱|餐廳|餐廳名稱|店名|name|restaurant)$/i.test(name)) {
+            knownNames.set(normalizeName(name), name);
+          }
+        });
+        (window.TRIP_SPOT_REFERENCES || []).forEach(function (name) {
+          if (typeof name !== 'string' || !name.trim()) return;
+          knownNames.set(normalizeName(name), name.trim());
+        });
+        addDayRoutes(knownNames);
+        var places = document.querySelectorAll('.event-text');
+        places.forEach(function (place) {
+          try {
+            var target = place.closest('.event');
+            if (!target || target.querySelector('[data-trip-map]')) return;
+            var name = knownNames.get(normalizeName(plainName(place)));
+            if (!name) return;
+            var panel = document.createElement('div');
+            panel.className = 'event-map';
+            panel.setAttribute('data-trip-map', 'true');
+            panel.id = 'trip-map-' + (++mapSequence);
+            panel.hidden = true;
+            var frame = document.createElement('iframe');
+            frame.title = name + ' Google Maps';
+            frame.loading = 'lazy';
+            frame.referrerPolicy = 'no-referrer-when-downgrade';
+            frame.allowFullscreen = true;
+            frame.dataset.mapSrc = 'https://www.google.com/maps?q=' + encodeURIComponent(name + ' 日本') + '&output=embed&hl=zh-TW';
+            panel.appendChild(frame);
+            var link = document.createElement('a');
+            link.href = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name + ' 日本');
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = '在 Google Maps 開啟';
+            link.title = '在 Google Maps 搜尋：' + name;
+            link.setAttribute('aria-label', link.title);
+            panel.appendChild(link);
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'map-toggle';
+            button.setAttribute('data-trip-map', 'true');
+            button.setAttribute('aria-controls', panel.id);
+            button.setAttribute('aria-expanded', 'false');
+            button.textContent = '顯示地圖';
+            button.addEventListener('click', function () {
+              panel.hidden = !panel.hidden;
+              button.textContent = panel.hidden ? '顯示地圖' : '隱藏地圖';
+              button.setAttribute('aria-expanded', String(!panel.hidden));
+              if (!panel.hidden && frame.dataset.mapSrc) {
+                frame.src = frame.dataset.mapSrc;
+                delete frame.dataset.mapSrc;
+              }
+            });
+            place.classList.add('has-map-toggle');
+            place.appendChild(button);
+            target.classList.add('has-map');
+            target.appendChild(panel);
+          } catch (error) {
+            console.warn('略過地圖按鈕：', error);
+          }
+        });
+      }
+      try {
+        var main = document.querySelector('main');
+        if (!main) return;
+        var observer = new MutationObserver(function () {
+          try { addMapLinks(); } catch (error) { console.warn('地圖按鈕未加入：', error); }
+        });
+        observer.observe(main, { childList: true, subtree: true });
+        addMapLinks();
+      } catch (error) {
+        console.warn('地圖功能未啟用：', error);
+      }
+    })();
+  </script>
