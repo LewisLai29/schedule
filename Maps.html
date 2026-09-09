@@ -67,15 +67,18 @@
           knownNames.set(normalizeName(name), name.trim());
         });
         addDayRoutes(knownNames);
-        var places = document.querySelectorAll('.event-text');
+        var places = document.querySelectorAll('.spot-list .spot-name');
         places.forEach(function (place) {
           try {
-            var target = place.closest('.event');
+            var target = place.closest('li');
             if (!target || target.querySelector('[data-trip-map]')) return;
-            var name = knownNames.get(normalizeName(plainName(place)));
+            var name = Array.from(place.childNodes).filter(function (node) {
+              return node.nodeType === 3;
+            }).map(function (node) { return node.textContent; }).join('').trim();
+            if (!name) name = (place.querySelector('.spot-en')?.textContent || '').trim();
             if (!name) return;
             var panel = document.createElement('div');
-            panel.className = 'event-map';
+            panel.className = 'event-map spot-map';
             panel.setAttribute('data-trip-map', 'true');
             panel.id = 'trip-map-' + (++mapSequence);
             panel.hidden = true;
@@ -101,17 +104,44 @@
             button.setAttribute('aria-controls', panel.id);
             button.setAttribute('aria-expanded', 'false');
             button.textContent = '顯示地圖';
+            var expanded = false;
+            var animation = null;
             button.addEventListener('click', function () {
-              panel.hidden = !panel.hidden;
-              button.textContent = panel.hidden ? '顯示地圖' : '隱藏地圖';
-              button.setAttribute('aria-expanded', String(!panel.hidden));
-              if (!panel.hidden && frame.dataset.mapSrc) {
+              var startHeight = panel.hidden ? 0 : panel.getBoundingClientRect().height;
+              var startOpacity = panel.hidden ? 0 : Number(getComputedStyle(panel).opacity);
+              var startMargin = panel.hidden ? -12 : parseFloat(getComputedStyle(panel).marginTop);
+              expanded = !expanded;
+              if (animation) {
+                animation.onfinish = null;
+                animation.cancel();
+                animation = null;
+              }
+              button.textContent = expanded ? '隱藏地圖' : '顯示地圖';
+              button.setAttribute('aria-expanded', String(expanded));
+              panel.inert = !expanded;
+              if (expanded && frame.dataset.mapSrc) {
                 frame.src = frame.dataset.mapSrc;
                 delete frame.dataset.mapSrc;
               }
+              if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !panel.animate) {
+                panel.hidden = !expanded;
+                panel.style.overflow = '';
+                return;
+              }
+              panel.hidden = false;
+              var endHeight = expanded ? panel.getBoundingClientRect().height : 0;
+              panel.style.overflow = 'hidden';
+              animation = panel.animate([
+                { height: startHeight + 'px', opacity: startOpacity, marginTop: startMargin + 'px' },
+                { height: endHeight + 'px', opacity: expanded ? 1 : 0, marginTop: expanded ? '0px' : '-12px' }
+              ], { duration: 260, easing: 'cubic-bezier(0.2, 0, 0, 1)' });
+              animation.onfinish = function () {
+                panel.hidden = !expanded;
+                panel.style.overflow = '';
+                animation = null;
+              };
             });
-            place.classList.add('has-map-toggle');
-            place.appendChild(button);
+            target.appendChild(button);
             target.classList.add('has-map');
             target.appendChild(panel);
           } catch (error) {

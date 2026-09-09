@@ -44,15 +44,13 @@
 
     function splitEvent(cell, fallbackTime) {
       const raw = cellText(cell);
-      const match = raw.match(/^\s*(\d{1,2}:\d{2})(?:\s+|$)([\s\S]*)$/);
-
-      if (!match) {
-        return { time: formatTime(fallbackTime), text: raw, url: cellUrl(cell) };
-      }
-
+      const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)(?:\s+|$)([\s\S]*)$/);
+      const text = match && match[3].trim() ? match[3].trim() : raw;
+      const route = text.match(/^([A-Z]{3})\s*(?:->|>|→)\s*([A-Z]{3})$/);
       return {
-        time: formatTime(match[1]),
-        text: match[2].trim(),
+        time: match ? formatTime(`${match[1]}:${match[2]}`) : route ? '' : fallbackTime,
+        text: route ? `${route[1]} → ${route[2]}` : text,
+        isJourney: Boolean(route && !match),
         url: cellUrl(cell)
       };
     }
@@ -91,7 +89,10 @@
       for (let rowIndex = 2; rowIndex < rows.length; rowIndex += 1) {
         const cell = rows[rowIndex]?.[column];
         if (!cellText(cell)) continue;
-        events.push(splitEvent(cell, rows[rowIndex]?.[0] ? cellText(rows[rowIndex][0]) : ''));
+        // Expanded merged cells retain their bounds; render once per day column.
+        if (Number.isInteger(cell.mergeStartRow) && rowIndex > cell.mergeStartRow) continue;
+        const startTime = formatTime(cellText(rows[rowIndex]?.[0]));
+        events.push(splitEvent(cell, startTime));
       }
 
       const lastEventIndex = events.length - 1;
@@ -108,9 +109,9 @@
 
       const eventMarkup = displayEvents.length
         ? `<div class="events">${displayEvents.map((event) => `
-            <div class="event${event.isAccommodation ? ' accommodation-event' : ''}">
+            <div class="event${event.isAccommodation ? ' accommodation-event' : ''}${event.isJourney ? ' journey-event' : ''}">
               ${event.isAccommodation ? '' : `<div class="event-time">${escapeHtml(event.time)}</div>`}
-              <div class="event-text">${linkMarkup({ text: event.text, url: event.url })}</div>
+              <div class="event-text">${event.isJourney ? '<span class="journey-icon" aria-hidden="true">✈</span>' : ''}${linkMarkup({ text: event.text, url: event.url })}</div>
             </div>`).join('')}</div>`
         : '<div class="empty-day">原始 schedule 尚未填寫行程。</div>';
 
@@ -177,6 +178,7 @@
       const sideItems = [];
       for (let rowIndex = 2; rowIndex < rows.length; rowIndex += 1) {
         const cell = rows[rowIndex]?.[10];
+        if (Number.isInteger(cell?.mergeStartRow) && rowIndex > cell.mergeStartRow) continue;
         if (cellText(cell)) sideItems.push(cell);
       }
 
@@ -203,6 +205,7 @@
         const d = row?.[3] || {};
         const aText = cellText(a);
         const bText = cellText(b);
+        const note = /^(備註|備注|備考|notes?)$/i.test(cellText(c)) ? null : c;
 
         if (aText && !bText && !cellText(c) && !cellText(d) && !cellUrl(a)) {
           current = { name: aText, items: [], resources: [] };
@@ -216,10 +219,9 @@
           groups.push(current);
         }
 
-        if (aText && (bText || cellUrl(a) || cellUrl(b))) {
-          current.items.push({ name: a, english: b });
+        if (aText && (bText || cellUrl(a) || cellUrl(b) || cellText(note))) {
+          current.items.push({ name: a, english: b, note, isLink: Boolean(cellUrl(a)) });
         }
-        if (cellText(c)) current.resources.push(c);
         if (cellText(d)) current.resources.push(d);
       });
 
@@ -228,13 +230,15 @@
 
     function spotGroupMarkup(group, cityTitle) {
       const items = group.items.map((item) => {
-        const actions = [
-          buttonMarkup(item.name, '官網')
-        ].filter(Boolean).join('');
+        const note = cellText(item.note)
+          ? `<span class="spot-note">${linkMarkup(item.note)}</span>` : '';
+
+        if (item.isLink) {
+          return `<li class="spot-resource-row"><div class="spot-resource-content"><a class="spot-resource-link" href="${escapeHtml(cellUrl(item.name))}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(cellText(item.name))}${cellText(item.english) ? `<span class="spot-en">${escapeHtml(cellText(item.english))}</span>` : ''}</span><span class="spot-resource-arrow" aria-hidden="true">↗</span></a>${note}</div></li>`;
+        }
 
         return `<li>
-          <div class="spot-name">${escapeHtml(cellText(item.name))}<span class="spot-en">${escapeHtml(cellText(item.english))}</span></div>
-          <span class="link-actions">${actions}</span>
+          <div class="spot-item-content"><div class="spot-name">${escapeHtml(cellText(item.name))}<span class="spot-en">${escapeHtml(cellText(item.english))}</span></div>${note}</div>
         </li>`;
       }).join('');
 
@@ -247,7 +251,7 @@
 
       return `<article class="spot-group">
         ${group.name.trim().toLowerCase() !== cityTitle.trim().toLowerCase() ? `<h4 class="spot-subheading">${escapeHtml(group.name)}</h4>` : ''}
-        <ul class="spot-list">${items || '<li><span class="spot-en">尚未填寫景點</span></li>'}</ul>
+        ${items ? `<ul class="spot-list">${items}</ul>` : ''}
         ${resources}
       </article>`;
     }
@@ -267,7 +271,7 @@
         ? sections.map((sheet) => {
             const groups = parseSpotSheet(sheet);
             const title = spotSheetTitle(sheet.name);
-            const count = groups.reduce((total, group) => total + group.items.length, 0);
+            const count = groups.reduce((total, group) => total + group.items.filter((item) => !item.isLink).length, 0);
             const details = spotInfoMarkup(parseSpotDetails(sheet.rows || []));
             return `<section class="spot-sheet">
               <header class="spot-sheet-header"><h3 class="spot-sheet-title">${escapeHtml(title)}</h3><span class="spot-count">${count} 個景點</span></header>

@@ -144,6 +144,8 @@ function readRichRange_(spreadsheet, config) {
           mergedCells.set(`${rowIndex}:${columnIndex}`, {
             text: mergedText,
             url: mergedUrl,
+            mergeStartRow: firstRow,
+            mergeEndRow: lastRow,
           });
         }
       }
