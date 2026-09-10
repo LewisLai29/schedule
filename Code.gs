@@ -62,6 +62,7 @@ function collectSpotSheets_(spreadsheet) {
       rows: readRichRange_(spreadsheet, {
         sheetName: sheet.getName(),
         range: sheet.getDataRange().getA1Notation(),
+        readFirstColumnImages: true,
       }),
     }));
 }
@@ -120,6 +121,10 @@ function readRichRange_(spreadsheet, config) {
   const range = sheet.getRange(config.range);
   const values = range.getDisplayValues();
   const richTextValues = range.getRichTextValues();
+  const imageColumn = config.readFirstColumnImages
+    ? sheet.getRange(range.getRow(), 1, range.getNumRows(), 1) : null;
+  const imageValues = imageColumn ? imageColumn.getValues() : [];
+  const imageFormulas = imageColumn ? imageColumn.getFormulas() : [];
   const mergedCells = new Map();
 
   if (config.expandMergedCells) {
@@ -153,6 +158,20 @@ function readRichRange_(spreadsheet, config) {
   }
 
   return values.map((row, rowIndex) => row.map((text, columnIndex) => {
+    if (imageColumn && range.getColumn() + columnIndex === 1) {
+      const value = imageValues[rowIndex][0];
+      const formula = imageFormulas[rowIndex][0] || '';
+      const imageFormula = formula.match(/^=\s*IMAGE\(\s*"((?:[^"]|"")*)"\s*(?:[,;)]|$)/i);
+      let imageUrl = imageFormula ? imageFormula[1].replace(/""/g, '"') : '';
+      let imageAlt = '';
+      if (value && value.valueType === SpreadsheetApp.ValueType.IMAGE) {
+        imageUrl = value.getContentUrl() || imageUrl;
+        imageAlt = value.getAltTextDescription() || value.getAltTextTitle() || '';
+      }
+      if (/^https?:\/\//i.test(imageUrl)) {
+        return { text: '', url: '', imageUrl, imageAlt };
+      }
+    }
     const mergedCell = mergedCells.get(`${rowIndex}:${columnIndex}`);
     if (mergedCell) return mergedCell;
 

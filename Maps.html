@@ -1,6 +1,6 @@
   <script>
-    // Optional enhancement: independent of the data-loading script above.
-    (function () {
+    // Called once after each completed trip render.
+    const initializeTripMaps = (function () {
       var mapSequence = 0;
       function normalizeName(value) {
         return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -23,24 +23,45 @@
       }
 
       function addDayRoutes(knownNames) {
+        var previousAccommodation = '';
         document.querySelectorAll('.day-card').forEach(function (day) {
           var stops = [];
           day.querySelectorAll('.event').forEach(function (event) {
             var name = knownNames.get(normalizeName(plainName(event.querySelector('.event-text'))));
             if (name) stops.push({ name: name, event: event });
           });
+          var firstStop = stops.find(function (stop) {
+            return !stop.event.classList.contains('accommodation-event');
+          });
+          if (previousAccommodation && firstStop && !day.querySelector('.accommodation-route')) {
+            var arrivalLink = document.createElement('a');
+            arrivalLink.className = 'transit-route accommodation-route';
+            arrivalLink.href = routeUrl(previousAccommodation, firstStop.name);
+            arrivalLink.target = '_blank';
+            arrivalLink.rel = 'noopener noreferrer';
+            arrivalLink.textContent = previousAccommodation + ' → ' + firstStop.name;
+            arrivalLink.setAttribute('aria-label', '查看前一天住宿 ' + previousAccommodation + ' 到 ' + firstStop.name + ' 的大眾運輸路線');
+            var arrivalRow = document.createElement('div');
+            arrivalRow.className = 'day-arrival-route';
+            arrivalRow.appendChild(arrivalLink);
+            var events = day.querySelector('.events');
+            events.parentNode.insertBefore(arrivalRow, events);
+          }
           stops.slice(0, -1).forEach(function (stop, index) {
-            if (stop.event.querySelector('.transit-route')) return;
+            if (stop.event.querySelector('.transit-route:not(.accommodation-route)')) return;
             var destination = stops[index + 1].name;
             var link = document.createElement('a');
             link.className = 'transit-route';
             link.href = routeUrl(stop.name, destination);
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.textContent = '大眾運輸 → ' + destination;
+            link.textContent = '→ ' + destination;
             link.setAttribute('aria-label', '查看 ' + stop.name + ' 到 ' + destination + ' 的大眾運輸路線');
             stop.event.appendChild(link);
           });
+          var accommodation = day.querySelector('.accommodation-event .event-text');
+          var accommodationName = accommodation ? plainName(accommodation) : '';
+          previousAccommodation = knownNames.get(normalizeName(accommodationName)) || accommodationName;
         });
       }
 
@@ -149,16 +170,8 @@
           }
         });
       }
-      try {
-        var main = document.querySelector('main');
-        if (!main) return;
-        var observer = new MutationObserver(function () {
-          try { addMapLinks(); } catch (error) { console.warn('地圖按鈕未加入：', error); }
-        });
-        observer.observe(main, { childList: true, subtree: true });
-        addMapLinks();
-      } catch (error) {
-        console.warn('地圖功能未啟用：', error);
-      }
+      return function initializeTripMaps() {
+        try { addMapLinks(); } catch (error) { console.warn('地圖功能未啟用：', error); }
+      };
     })();
   </script>

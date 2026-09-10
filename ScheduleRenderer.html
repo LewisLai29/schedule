@@ -1,0 +1,159 @@
+  <script>
+    function formatTime(value) {
+      const raw = String(value ?? '').trim();
+      const match = raw.match(/^(\d{1,2}):(\d{2})/);
+      return match ? `${match[1].padStart(2, '0')}:${match[2]}` : raw;
+    }
+
+    function splitEvent(cell, fallbackTime) {
+      const raw = cellText(cell);
+      const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)(?:\s+|$)([\s\S]*)$/);
+      const text = match && match[3].trim() ? match[3].trim() : raw;
+      const route = text.match(/^([A-Z]{3})\s*(?:->|>|→)\s*([A-Z]{3})$/);
+      return {
+        time: match ? formatTime(`${match[1]}:${match[2]}`) : route ? '' : fallbackTime,
+        text: route ? `${route[1]} → ${route[2]}` : text,
+        isJourney: Boolean(route && !match),
+        url: cellUrl(cell)
+      };
+    }
+
+    function parseDate(value) {
+      const raw = String(value ?? '').trim();
+      const match = raw.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s*\(([^)]+)\)/);
+
+      if (!match) return { monthDay: raw, weekday: '', full: raw };
+
+      const monthDay = `${match[2].padStart(2, '0')}/${match[3].padStart(2, '0')}`;
+      return {
+        monthDay,
+        weekday: match[4],
+        full: `${match[1]}/${match[2].padStart(2, '0')}/${match[3].padStart(2, '0')}（${match[4]}）`
+      };
+    }
+
+    function isAccommodationText(value) {
+      return /\b(?:hotel|inn)\b/i.test(String(value || ''));
+    }
+
+    function scheduleCard(rows, column, index, totalColumns) {
+      const dateCell = rows[0]?.[column];
+      const placeCell = rows[1]?.[column];
+      const date = parseDate(cellText(dateCell));
+      // Compare the full date using the visitor's device timezone.
+      const dateParts = cellText(dateCell).match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+      const today = new Date();
+      const isToday = dateParts && Number(dateParts[1]) === today.getFullYear()
+        && Number(dateParts[2]) === today.getMonth() + 1
+        && Number(dateParts[3]) === today.getDate();
+      const place = cellText(placeCell);
+      const events = [];
+
+      for (let rowIndex = 2; rowIndex < rows.length; rowIndex += 1) {
+        const cell = rows[rowIndex]?.[column];
+        if (!cellText(cell)) continue;
+        // Expanded merged cells retain their bounds; render once per day column.
+        if (Number.isInteger(cell.mergeStartRow) && rowIndex > cell.mergeStartRow) continue;
+        const startTime = formatTime(cellText(rows[rowIndex]?.[0]));
+        events.push(splitEvent(cell, startTime));
+      }
+
+      const lastEventIndex = events.length - 1;
+      const displayEvents = events
+        .map((event, eventIndex) => ({
+          ...event,
+          isAccommodation: eventIndex === lastEventIndex && isAccommodationText(event.text),
+        }))
+        .filter((event) => !(index === totalColumns && event.isAccommodation));
+      const isFlightDay = displayEvents.some((event) => /IT714|IT715|TPE|OKJ|機場|起飛|降落/.test(event.text));
+      const title = index === 1 ? '抵達日本' : index === 8 ? '回程' : (place || '彈性安排');
+      const label = place || (index === 1 ? '前往岡山' : index === 8 ? '返回岡山' : '—');
+      const tag = isFlightDay ? '航班日' : displayEvents.length ? '行程' : '待補';
+
+      const eventMarkup = displayEvents.length
+        ? `<div class="events">${displayEvents.map((event) => `
+            <div class="event${event.isAccommodation ? ' accommodation-event' : ''}${event.isJourney ? ' journey-event' : ''}">
+              ${event.isAccommodation ? '' : `<div class="event-time">${escapeHtml(event.time)}</div>`}
+              <div class="event-text">${event.isJourney ? '<span class="journey-icon" aria-hidden="true">✈</span>' : ''}${linkMarkup({ text: event.text, url: event.url })}</div>
+            </div>`).join('')}</div>`
+        : '<div class="empty-day">原始 schedule 尚未填寫行程。</div>';
+
+      return `<details class="day-card"${isToday ? ' open' : ''}>
+        <summary class="day-label">
+          <div class="day-number">DAY ${String(index).padStart(2, '0')}</div>
+          <div class="day-date">${escapeHtml(date.monthDay)}${date.weekday ? `<br>週${escapeHtml(date.weekday)}` : ''}</div>
+          <div class="day-place">${escapeHtml(label)}</div>
+        </summary>
+        <div class="day-body">
+          <div class="day-title"><h3>${escapeHtml(title)}</h3><span class="tag">${escapeHtml(tag)}</span></div>
+          ${eventMarkup}
+        </div>
+      </details>`;
+    }
+
+    function enableScheduleAnimation() {
+      document.querySelectorAll('.day-card').forEach((card) => {
+        const summary = card.querySelector('summary');
+        let animation = null;
+        let expanded = card.open;
+        summary.addEventListener('click', (event) => {
+          if (event.target.closest('a, button')) return;
+          event.preventDefault();
+          const startHeight = card.getBoundingClientRect().height;
+          expanded = !expanded;
+          if (animation) {
+            animation.onfinish = null;
+            animation.cancel();
+            animation = null;
+          }
+          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !card.animate) {
+            card.open = expanded;
+            return;
+          }
+          // Measure natural dimensions, including borders, without leaving a fixed height.
+          card.open = expanded;
+          const endHeight = card.getBoundingClientRect().height;
+          card.open = true;
+          animation = card.animate(
+            [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+            { duration: 260, easing: 'cubic-bezier(0.2, 0, 0, 1)' }
+          );
+          animation.onfinish = () => {
+            card.open = expanded;
+            animation = null;
+          };
+        });
+      });
+    }
+
+    function renderSchedule(rows) {
+      const columns = 8;
+      const firstDate = parseDate(cellText(rows[0]?.[1]));
+      const lastDate = parseDate(cellText(rows[0]?.[columns]));
+      document.getElementById('trip-dates').textContent = `${firstDate.full} — ${lastDate.full}`;
+      document.getElementById('schedule-grid').innerHTML = Array.from(
+        { length: columns },
+        (_, index) => scheduleCard(rows, index + 1, index + 1, columns)
+      ).join('');
+      enableScheduleAnimation();
+
+      const sidePlace = cellText(rows[1]?.[10]);
+      const sideItems = [];
+      for (let rowIndex = 2; rowIndex < rows.length; rowIndex += 1) {
+        const cell = rows[rowIndex]?.[10];
+        if (Number.isInteger(cell?.mergeStartRow) && rowIndex > cell.mergeStartRow) continue;
+        if (cellText(cell)) sideItems.push(cell);
+      }
+
+      if (!sidePlace && !sideItems.length) {
+        document.getElementById('schedule-notes').innerHTML = '';
+        return;
+      }
+
+      document.getElementById('schedule-notes').innerHTML = `<div class="note-card" style="margin-top: 18px;">
+        <h3>${escapeHtml(sidePlace || '其他景點備忘')}</h3>
+        <p>這組內容在原始 schedule 的日期行程旁獨立列出，先保留為備選景點。</p>
+        <div class="chip-list">${sideItems.map((cell) => `<span class="place-chip">${linkMarkup(cell)}</span>`).join('')}</div>
+      </div>`;
+    }
+  </script>

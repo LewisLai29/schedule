@@ -1,5 +1,6 @@
   <script>
     function showError(error) {
+      closeSpotImageDialog();
       const message = error && error.message ? error.message : String(error || '未知錯誤');
       console.error('讀取旅遊資料失敗：', error);
       document.getElementById('schedule-grid').innerHTML = `<div class="error-box">資料讀取失敗：${escapeHtml(message)}</div>`;

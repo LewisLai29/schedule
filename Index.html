@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#102b49">
   <title>岡山保佑一定好天氣｜旅遊 Schedule</title>
   <?!= include_('Styles'); ?>
+  <?!= include_('SpotGalleryStyles'); ?>
 </head>
 <body>
   <header class="hero">
@@ -68,7 +69,10 @@
   </footer>
 
   <?!= include_('TripRenderer'); ?>
-  <?!= include_('App'); ?>
+  <?!= include_('ScheduleRenderer'); ?>
+  <?!= include_('SpotGallery'); ?>
+  <?!= include_('SpotRenderer'); ?>
   <?!= include_('Maps'); ?>
+  <?!= include_('App'); ?>
 </body>
 </html>

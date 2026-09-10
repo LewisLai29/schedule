@@ -1,0 +1,270 @@
+  <script>
+    let activeSpotImageDialog = null;
+    let spotImageHistory = null;
+
+    function getSpotImageHistory() {
+      if (spotImageHistory) return spotImageHistory;
+      const appsHistory = window.google?.script?.history;
+      let ownsEntry = false;
+      let token = null;
+      const onChange = (event) => {
+        if (ownsEntry && event.state?.spotImagePopup === token) return;
+        ownsEntry = false;
+        closeSpotImageDialog();
+      };
+      if (appsHistory) appsHistory.setChangeHandler(onChange);
+      else window.addEventListener('popstate', onChange);
+      spotImageHistory = {
+        push() {
+          token = `spot-image-${Date.now()}-${Math.random()}`;
+          const state = { spotImagePopup: token };
+          if (appsHistory) appsHistory.push(state, null, null);
+          else window.history.pushState({ ...window.history.state, ...state }, '');
+          ownsEntry = true;
+        },
+        release() {
+          if (!ownsEntry) return;
+          ownsEntry = false;
+          // Replace the popup entry when it is closed from inside the page.
+          // This avoids leaving a stale entry that can intercept the next tap.
+          if (appsHistory) appsHistory.replace({}, null, null);
+          else {
+            const state = { ...(window.history.state || {}) };
+            delete state.spotImagePopup;
+            window.history.replaceState(state, '', window.location.href);
+          }
+        },
+      };
+      return spotImageHistory;
+    }
+
+    function closeSpotImageDialog() {
+      if (activeSpotImageDialog) activeSpotImageDialog();
+    }
+
+    function spotGalleryMarkup(sheet, sheetIndex, title) {
+      const imageCells = (sheet.rows || []).map((row) => row?.[0])
+        .filter((cell) => /^https?:\/\//i.test(cell?.imageUrl || ''));
+      const galleryId = `spot-gallery-${sheetIndex}`;
+      const images = imageCells
+        .map((cell, index) => `<button type="button" class="spot-image-slide" aria-haspopup="dialog" aria-label="${escapeHtml(title)} 圖片 ${index + 1}：放大查看"><img class="spot-sheet-image" src="${escapeHtml(cell.imageUrl)}" alt="${escapeHtml(cell.imageAlt || title)}" loading="lazy" decoding="async"></button>`)
+        .join('');
+      return `${images ? `<div class="spot-gallery">
+                <div class="spot-sheet-images" id="${galleryId}" role="region" aria-label="${escapeHtml(title)} 圖片集" tabindex="0">${images}</div>
+                <div class="spot-gallery-toolbar"><span class="spot-gallery-hint">點圖查看原圖${imageCells.length > 1 ? ' · 左右滑動切換' : ''}</span>
+                  ${imageCells.length > 1 ? `<div class="spot-gallery-controls"><button type="button" data-gallery-step="-1" aria-controls="${galleryId}" aria-label="上一張圖片" disabled>←</button><span class="spot-gallery-count" aria-live="polite">1 / ${imageCells.length}</span><button type="button" data-gallery-step="1" aria-controls="${galleryId}" aria-label="下一張圖片">→</button></div>` : ''}
+                </div>
+              </div>` : ''}`;
+    }
+
+    function enableSpotGalleries() {
+      document.querySelectorAll('.spot-gallery').forEach((gallery) => {
+        const track = gallery.querySelector('.spot-sheet-images');
+        const slides = Array.from(track.children);
+        const buttons = gallery.querySelectorAll('[data-gallery-step]');
+        slides.forEach((slide, index) => slide.addEventListener('click', () => openSpotImageDialog(slides, index)));
+        if (slides.length < 2) return;
+        const currentIndex = () => {
+          const left = track.getBoundingClientRect().left;
+          return slides.reduce((best, slide, index) =>
+            Math.abs(slide.getBoundingClientRect().left - left) < Math.abs(slides[best].getBoundingClientRect().left - left) ? index : best, 0);
+        };
+        const move = (step) => {
+          const index = Math.max(0, Math.min(slides.length - 1, currentIndex() + step));
+          track.scrollBy({ left: slides[index].getBoundingClientRect().left - track.getBoundingClientRect().left,
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        };
+        buttons.forEach((button) => button.addEventListener('click', () => move(Number(button.dataset.galleryStep))));
+        track.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          move(event.key === 'ArrowLeft' ? -1 : 1);
+        });
+        track.addEventListener('scroll', () => {
+          const index = currentIndex();
+          const count = gallery.querySelector('.spot-gallery-count');
+          const label = `${index + 1} / ${slides.length}`;
+          if (count.textContent !== label) count.textContent = label;
+          buttons[0].disabled = index === 0;
+          buttons[1].disabled = index === slides.length - 1;
+        }, { passive: true });
+      });
+    }
+
+    function openSpotImageDialog(slides, initialIndex) {
+      closeSpotImageDialog();
+      const popupHistory = getSpotImageHistory();
+      const dialog = document.createElement('dialog');
+      dialog.id = 'spot-image-dialog';
+      dialog.className = 'spot-image-dialog';
+      dialog.setAttribute('aria-label', '景點圖片預覽');
+      dialog.innerHTML = `<div class="spot-image-dialog-stage" tabindex="0" autofocus aria-label="雙擊切換縮放，左右滑動換圖；按 Esc 關閉"><img alt=""></div>
+        <div class="spot-image-dialog-footer"><button type="button" data-image-prev aria-label="上一張圖片">←</button><span data-image-count aria-live="polite"></span><button type="button" data-image-next aria-label="下一張圖片">→</button></div>`;
+      const image = dialog.querySelector('img');
+      const stage = dialog.querySelector('.spot-image-dialog-stage');
+      let controlsTimer;
+      const showControls = () => {
+        dialog.classList.add('show-image-controls');
+        clearTimeout(controlsTimer);
+        controlsTimer = setTimeout(() => dialog.classList.remove('show-image-controls'), 1600);
+      };
+      const navigate = (step) => {
+        index = Math.max(0, Math.min(slides.length - 1, index + step));
+        update();
+        showControls();
+      };
+      const resetZoom = enableSpotImageZoom(stage, image, showControls, navigate);
+      // Fit the popup to the image ratio instead of surrounding it with empty bars.
+      image.addEventListener('load', () => {
+        if (image.naturalWidth && image.naturalHeight) {
+          dialog.style.setProperty('--image-aspect', image.naturalWidth / image.naturalHeight);
+          resetZoom();
+        }
+      });
+      const previous = dialog.querySelector('[data-image-prev]');
+      const next = dialog.querySelector('[data-image-next]');
+      let index = initialIndex;
+      const update = () => {
+        resetZoom();
+        const source = slides[index].querySelector('img');
+        // Size from the loaded thumbnail before showing the full image.
+        dialog.style.setProperty('--image-aspect', source.naturalWidth && source.naturalHeight
+          ? source.naturalWidth / source.naturalHeight : 1.5);
+        image.src = source.src;
+        image.alt = source.alt;
+        dialog.setAttribute('aria-label', `${source.alt} 圖片預覽`);
+        dialog.querySelector('[data-image-count]').textContent = `${index + 1} / ${slides.length}`;
+        previous.disabled = index === 0;
+        next.disabled = index === slides.length - 1;
+        previous.hidden = next.hidden = slides.length === 1;
+        dialog.querySelector('.spot-image-dialog-footer').hidden = slides.length === 1;
+      };
+      previous.addEventListener('click', () => navigate(-1));
+      next.addEventListener('click', () => navigate(1));
+      dialog.addEventListener('click', (event) => {
+        const bounds = dialog.getBoundingClientRect();
+        if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) dialog.close();
+      });
+      dialog.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          event.preventDefault();
+          navigate(event.key === 'ArrowLeft' ? -1 : 1);
+        }
+      });
+      const previousOverflow = document.body.style.overflow;
+      let cleanedUp = false;
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        clearTimeout(controlsTimer);
+        if (activeSpotImageDialog === closeDialog) activeSpotImageDialog = null;
+        document.body.style.overflow = previousOverflow;
+        dialog.remove();
+        popupHistory.release();
+        if (slides[initialIndex].isConnected) slides[initialIndex].focus({ preventScroll: true });
+      };
+      const closeDialog = () => {
+        dialog.close();
+        cleanup();
+      };
+      activeSpotImageDialog = closeDialog;
+      dialog.addEventListener('close', cleanup, { once: true });
+      document.body.appendChild(dialog);
+      update();
+      dialog.showModal();
+      document.body.style.overflow = 'hidden';
+      popupHistory.push();
+    }
+
+    function enableSpotImageZoom(stage, image, showControls, navigate) {
+      let scale = 1;
+      let x = 0;
+      let y = 0;
+      let lastTap = null;
+      let tapStart = null;
+      let lastTouchToggle = -Infinity;
+      let swipeStart = null;
+      const pointers = new Map();
+      const apply = () => {
+        stage.closest('.spot-image-dialog').classList.toggle('is-fullscreen-image', scale > 1);
+        const bounds = stage.getBoundingClientRect();
+        const maxX = bounds.width * (scale - 1) / 2;
+        const maxY = bounds.height * (scale - 1) / 2;
+        x = Math.max(-maxX, Math.min(maxX, x));
+        y = Math.max(-maxY, Math.min(maxY, y));
+        image.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+        stage.classList.toggle('is-zoomed', scale > 1);
+      };
+      const reset = () => { scale = 1; x = 0; y = 0; lastTap = null; apply(); };
+      const toggleZoom = (event) => {
+        if (scale > 1) { reset(); return; }
+        const bounds = stage.getBoundingClientRect();
+        scale = 2;
+        x = (bounds.left + bounds.width / 2 - event.clientX) * (scale - 1);
+        y = (bounds.top + bounds.height / 2 - event.clientY) * (scale - 1);
+        lastTap = null;
+        apply();
+      };
+      const distance = () => {
+        const [a, b] = Array.from(pointers.values());
+        return Math.hypot(a.x - b.x, a.y - b.y);
+      };
+      image.draggable = false;
+      stage.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        // Touch double taps are handled below; ignore their synthesized double click.
+        if (event.timeStamp - lastTouchToggle < 500) return;
+        toggleZoom(event);
+      });
+      stage.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        showControls();
+        scale = Math.max(1, Math.min(5, scale * Math.exp(-event.deltaY * .002)));
+        apply();
+      }, { passive: false });
+      stage.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        stage.setPointerCapture(event.pointerId);
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        swipeStart = pointers.size === 1 && scale === 1 ? { x: event.clientX, y: event.clientY } : null;
+        tapStart = pointers.size === 1 ? { x: event.clientX, y: event.clientY, time: event.timeStamp } : null;
+        if (pointers.size > 1) lastTap = null;
+      });
+      stage.addEventListener('pointermove', (event) => {
+        const previous = pointers.get(event.pointerId);
+        if (!previous) return;
+        showControls();
+        const oldDistance = pointers.size === 2 ? distance() : 0;
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (tapStart && Math.hypot(event.clientX - tapStart.x, event.clientY - tapStart.y) > 12) tapStart = null;
+        if (oldDistance > 0) scale = Math.max(1, Math.min(5, scale * distance() / oldDistance));
+        else if (pointers.size === 1 && scale > 1) {
+          x += event.clientX - previous.x;
+          y += event.clientY - previous.y;
+        }
+        apply();
+      });
+      const endPointer = (event) => {
+        if (!pointers.has(event.pointerId)) return;
+        if (event.type === 'pointerup' && swipeStart && scale === 1) {
+          const dx = event.clientX - swipeStart.x;
+          const dy = event.clientY - swipeStart.y;
+          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) navigate(dx < 0 ? 1 : -1);
+        }
+        swipeStart = null;
+        if (event.type === 'pointerup' && event.pointerType !== 'mouse' && pointers.size === 1 && tapStart && event.timeStamp - tapStart.time < 250) {
+          if (lastTap && event.timeStamp - lastTap.time < 350 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 24) {
+            lastTouchToggle = event.timeStamp;
+            toggleZoom(event);
+          }
+          else lastTap = { x: event.clientX, y: event.clientY, time: event.timeStamp };
+        }
+        pointers.delete(event.pointerId);
+        tapStart = null;
+      };
+      stage.addEventListener('pointerup', endPointer);
+      stage.addEventListener('pointercancel', endPointer);
+      stage.addEventListener('lostpointercapture', endPointer);
+      return reset;
+    }
+  </script>

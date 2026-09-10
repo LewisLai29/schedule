@@ -1,0 +1,35 @@
+  <style>
+    .spot-gallery { min-width: 0; margin-bottom: 24px; }
+    .spot-sheet-images { display: flex; height: 280px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; border-radius: 12px; background: #f1f5f6; scrollbar-width: thin; }
+    .spot-image-slide { display: flex; flex: 0 0 100%; min-width: 0; height: 100%; align-items: center; justify-content: center; scroll-snap-align: start; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+    .spot-sheet-image { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .spot-gallery-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .spot-gallery-hint { color: var(--muted); font-size: .78rem; }
+    .spot-gallery-controls { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+    .spot-gallery-count { min-width: 42px; text-align: center; color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+    .spot-gallery-controls button { width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--blue); font-size: 1.1rem; cursor: pointer; }
+    .spot-gallery-controls button:hover:not(:disabled) { background: var(--sky); }
+    .spot-gallery-controls button:disabled { opacity: .35; cursor: default; }
+    .spot-sheet-images:focus-visible, .spot-image-slide:focus-visible, .spot-gallery-controls button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    @media (max-width: 560px) { .spot-sheet-images { height: 220px; } }
+    .spot-image-dialog { width: min(1100px, 94vw, calc(86dvh * var(--image-aspect, 1.5))); max-width: 94vw; max-height: 94dvh; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #fff; overflow: hidden; box-shadow: 0 16px 60px #0004; }
+    .spot-image-dialog::backdrop { background: rgba(12, 25, 38, .75); }
+    .spot-image-dialog-footer { position: absolute; z-index: 1; display: flex; align-items: center; gap: 2px; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
+    .spot-image-dialog.show-image-controls .spot-image-dialog-footer, .spot-image-dialog-footer:focus-within { opacity: 1; }
+    .spot-image-dialog .spot-image-dialog-footer button { pointer-events: none; }
+    .spot-image-dialog.show-image-controls .spot-image-dialog-footer button, .spot-image-dialog-footer:focus-within button { pointer-events: auto; }
+    .spot-image-dialog.is-fullscreen-image { position: fixed; inset: 0; margin: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; border-radius: 0; box-shadow: none; }
+    .spot-image-dialog.is-fullscreen-image .spot-image-dialog-stage { height: 100dvh; }
+    .spot-image-dialog-stage:focus { outline: none; }
+    .spot-image-dialog-stage { position: relative; width: 100%; height: min(86dvh, calc(94vw / var(--image-aspect, 1.5)), calc(1100px / var(--image-aspect, 1.5))); min-height: 0; background: transparent; overflow: hidden; touch-action: none; user-select: none; }
+    .spot-image-dialog-stage.is-zoomed { cursor: grab; }
+    .spot-image-dialog-stage.is-zoomed:active { cursor: grabbing; }
+    .spot-image-dialog-stage img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
+    .spot-image-dialog-footer { bottom: max(10px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); justify-content: center; font-variant-numeric: tabular-nums; border: 0; }
+    .spot-image-dialog-footer[hidden] { display: none; }
+    .spot-image-dialog [data-image-count] { padding: 4px 7px; border-radius: 12px; background: rgba(12, 25, 38, .72); font-size: .72rem; white-space: nowrap; }
+    .spot-image-dialog button { pointer-events: auto; flex-shrink: 0; width: 44px; min-width: 44px; height: 44px; padding: 0; border: 8px solid transparent; background-clip: padding-box; border-radius: 50%; color: #fff; background-color: rgba(12, 25, 38, .78); cursor: pointer; font-size: .75rem; }
+    .spot-image-dialog button:hover:not(:disabled) { background: rgba(12, 25, 38, .95); }
+    .spot-image-dialog button:disabled { opacity: .35; cursor: default; }
+    .spot-image-dialog button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  </style>
