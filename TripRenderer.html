@@ -43,7 +43,15 @@
         return;
       }
 
-      document.getElementById('food-content').innerHTML = `<div class="food-table">${nonEmptyRows.map((row) => `<div class="food-row">${row.filter((cell) => cellText(cell)).map((cell) => `<div class="food-cell">${linkMarkup(cell)}</div>`).join('')}</div>`).join('')}</div>`;
+      document.getElementById('food-content').innerHTML = `<div class="food-table">${nonEmptyRows.map((row) => {
+        const nameIndex = row.findIndex((cell, index) => index < 2 && cellText(cell));
+        const cells = row.map((cell, index) => {
+          if (!cellText(cell)) return '';
+          const isNote = index === 2 && !/^(備註|備考|备注|notes?)$/i.test(cellText(cell));
+          return `<div class="food-cell${index === nameIndex ? ' food-name' : ''}${isNote ? ' spot-note' : ''}">${linkMarkup(cell)}</div>`;
+        }).join('');
+        return `<div class="food-row"><div class="food-item-content">${cells}</div></div>`;
+      }).join('')}</div>`;
     }
 
     function removeLegacyKobeSection() {
@@ -71,14 +79,30 @@
 
     function renderTrip(data) {
       removeLegacyKobeSection();
-      window.TRIP_SPOT_REFERENCES = Array.isArray(data.spotReferences) ? data.spotReferences : [];
       renderHotels(data.hotel || []);
       renderSchedule(data.schedule || []);
 
       renderSpotSheets(data);
       renderFood(data.food || []);
-      initializeTripMaps();
       document.getElementById('updated-at').textContent = data.updatedAt || '—';
+      try {
+        window.TRIP_MAP_DATA_ERROR = data.mapLocationError || '';
+        document.getElementById('trip-map-status')?.remove();
+        if (window.TRIP_MAP_DATA_ERROR) {
+          console.warn(window.TRIP_MAP_DATA_ERROR);
+          const status = document.createElement('p');
+          status.id = 'trip-map-status';
+          status.className = 'callout';
+          status.setAttribute('role', 'status');
+          status.textContent = '部分地圖位置暫時無法載入，行程內容仍可查看。';
+          const grid = document.getElementById('schedule-grid');
+          grid.parentNode.insertBefore(status, grid);
+        }
+        window.TRIP_LOCATION_INDEX = buildTripLocationIndex(data);
+        initializeTripMaps();
+      } catch (error) {
+        console.warn('地圖初始化失敗：', error);
+      }
     }
 
   </script>

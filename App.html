@@ -13,7 +13,9 @@
     function loadTripData() {
       removeLegacyKobeSection();
       google.script.run
-        .withSuccessHandler(renderTrip)
+        .withSuccessHandler(function (data) {
+          try { renderTrip(data); } catch (error) { showError(error); }
+        })
         .withFailureHandler(showError)
         .getTripData();
     }

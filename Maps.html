@@ -1,10 +1,163 @@
   <script>
+    function mapRouteLocation(url) {
+      try {
+        var parsed = new URL(url);
+        if (!/^(?:www\.|maps\.)?google\.(?:com|co\.jp|com\.tw)$/i.test(parsed.hostname)) return null;
+        var decoded = decodeURIComponent(parsed.href);
+        var query = parsed.searchParams.get('query') || parsed.searchParams.get('q') || '';
+        var embeddedId = decoded.match(/!1s(ChI[\w-]+)(?:!|\?|&|$)/);
+        var placeId = parsed.searchParams.get('query_place_id') || (embeddedId ? embeddedId[1] : '');
+        if (query.startsWith('place_id:')) {
+          placeId = query.slice(9);
+          query = '';
+        }
+        // !3d/!4d identify the place; @ coordinates are only the camera center.
+        var point = decoded.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)
+          || decodeURIComponent(parsed.pathname).match(/\/place\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)(?:\/|$)/);
+        var coordinates = point ? point[1] + ',' + point[2] : '';
+        if (placeId) return { value: coordinates || query, placeId: placeId };
+        if (coordinates) return { value: coordinates };
+        if (query && !/^https?:/i.test(query)) return { value: query };
+      } catch (error) { /* An unresolved link is not a usable route endpoint. */ }
+      return null;
+    }
+
+    function normalizeLocationName(value) {
+      return String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
+    function buildTripLocationIndex(data) {
+      const resolvedUrls = new Map((data.mapLocations || []).map((location) => [
+        location.originalUrl || location.url, location.url
+      ]));
+      const parsedUrls = new Map();
+      const isHeading = (name) => /^(名稱|餐廳|餐廳名稱|店名|住宿|飯店|旅館|飯店名稱|住宿名稱|name|restaurant|hotel|hotels|hotel name)$/i.test(name);
+      const mapUrl = (cell) => [cell?.mapUrl || '', cellUrl(cell), cellText(cell)].find((url) =>
+        /^https:\/\/(?:maps\.app\.goo\.gl\/|goo\.gl\/maps(?:\/|\?)|(?:www\.|maps\.)?google\.(?:com|co\.jp|com\.tw)\/(?:maps(?:\/|\?)|\?))/i.test(url)
+      ) || '';
+      function fromRows(rows, source, isSpot) {
+        const index = new Map();
+        rows.forEach((row) => {
+          const name = cellText(row[0]) || (!isSpot ? cellText(row[1]) : '');
+          if (!name || isHeading(name)) return;
+          // A spot row containing only its first column is a group heading.
+          if (isSpot && !cellText(row[1]) && !mapUrl(row[0]) && !mapUrl(row[1]) && !cellUrl(row[0]) && !cellUrl(row[1]) && !cellText(row[2])) return;
+          const originalUrl = mapUrl(row[1]) || mapUrl(row[0]);
+          const url = resolvedUrls.get(originalUrl) || originalUrl;
+          if (!parsedUrls.has(url)) parsedUrls.set(url, mapRouteLocation(url));
+          const location = { name, source, url: originalUrl, resolvedUrl: url, endpoint: parsedUrls.get(url) };
+          const alias = cellText(row[1]);
+          [name, alias && !/^https?:\/\//i.test(alias) && !isHeading(alias) ? alias : ''].forEach((key) => {
+            key = normalizeLocationName(key);
+            if (!key) return;
+            const existing = index.get(key);
+            if (!existing || (!existing.endpoint && location.endpoint) || (!existing.url && location.url)) index.set(key, location);
+          });
+        });
+        return index;
+      }
+      const sources = (data.spotSheets || []).map((sheet) => fromRows(sheet.rows || [], sheet.name, true));
+      sources.push(fromRows(data.food || [], 'food', false));
+      sources.push(fromRows(data.hotel || [], 'hotel', false));
+      const index = new Map();
+      sources.forEach((source) => source.forEach((location, key) => {
+        const existing = index.get(key);
+        // Prefer a usable endpoint over an unresolved duplicate.
+        if (!existing || (!existing.endpoint && location.endpoint) || (!existing.url && location.url)) index.set(key, location);
+      }));
+      return index;
+    }
+
+    function getTripLocation(name) {
+      return window.TRIP_LOCATION_INDEX?.get(normalizeLocationName(name));
+    }
+
+    function routeUrl(origin, destination) {
+      const start = getTripLocation(origin)?.endpoint;
+      const end = getTripLocation(destination)?.endpoint;
+      if (!start || !end) return null;
+      const params = new URLSearchParams({
+        api: '1', origin: start.value || origin,
+        destination: end.value || destination, travelmode: 'transit'
+      });
+      if (start?.placeId) params.set('origin_place_id', start.placeId);
+      if (end?.placeId) params.set('destination_place_id', end.placeId);
+      return 'https://www.google.com/maps/dir/?' + params.toString();
+    }
+
+    function setRouteLink(link, origin, destination) {
+      const url = routeUrl(origin, destination);
+      if (url) {
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      } else if ([origin, destination].every((name) => {
+        const location = getTripLocation(name);
+        return location?.endpoint || /^https:\/\/(?:maps\.app\.goo\.gl|goo\.gl)\//i.test(location?.url || '');
+      })) {
+        const label = link.textContent;
+        link.setAttribute('role', 'button');
+        link.tabIndex = 0;
+        link.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            link.click();
+          }
+        });
+        link.addEventListener('click', function (event) {
+          if (link.hasAttribute('href')) return;
+          event.preventDefault();
+          if (link.getAttribute('aria-busy') === 'true') return;
+          const routeWindow = window.open('about:blank', '_blank');
+          if (routeWindow) routeWindow.opener = null;
+          link.textContent = '正在取得路線…';
+          link.setAttribute('aria-busy', 'true');
+          const fail = function (error) {
+            if (routeWindow && !routeWindow.closed) routeWindow.close();
+            link.removeAttribute('aria-busy');
+            link.textContent = label + '（無法取得位置，點此重試）';
+            link.title = error?.message || '請確認景點或餐廳的地圖連結。';
+          };
+          const pendingUrls = [origin, destination].map(getTripLocation)
+            .filter((location) => !location.endpoint).map((location) => location.url);
+          try {
+            google.script.run.withSuccessHandler(function (locations) {
+              try {
+                locations.forEach(function (resolved) {
+                  window.TRIP_LOCATION_INDEX.forEach(function (location) {
+                    if (location.url !== resolved.originalUrl) return;
+                    location.resolvedUrl = resolved.url;
+                    location.endpoint = mapRouteLocation(resolved.url);
+                  });
+                });
+                const resolvedRoute = routeUrl(origin, destination);
+                if (!resolvedRoute) throw new Error('地圖連結中找不到可用的位置。');
+                link.removeAttribute('aria-busy');
+                link.removeAttribute('role');
+                link.removeAttribute('title');
+                link.textContent = label;
+                link.href = resolvedRoute;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                if (routeWindow && !routeWindow.closed) routeWindow.location.replace(resolvedRoute);
+                else link.textContent = label + '（路線已就緒，點此開啟）';
+              } catch (error) { fail(error); }
+            }).withFailureHandler(fail).resolveMapLocations(pendingUrls);
+          } catch (error) { fail(error); }
+        });
+      } else {
+        const missing = [origin, destination].filter((name) => !getTripLocation(name)?.endpoint);
+        link.removeAttribute('href');
+        link.setAttribute('aria-disabled', 'true');
+        link.title = '無法取得地圖位置：' + missing.join('、');
+        link.textContent += window.TRIP_MAP_DATA_ERROR ? '（地圖資料未載入）' : '（無法取得位置）';
+        link.setAttribute('aria-label', link.textContent + '。' + link.title);
+      }
+    }
+
     // Called once after each completed trip render.
     const initializeTripMaps = (function () {
       var mapSequence = 0;
-      function normalizeName(value) {
-        return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
-      }
 
       function plainName(element) {
         return Array.from(element.childNodes).filter(function (node) {
@@ -12,22 +165,12 @@
         }).map(function (node) { return node.textContent; }).join(' ').trim();
       }
 
-      function routeUrl(origin, destination) {
-        var params = new URLSearchParams({
-          api: '1',
-          origin: origin + ' 日本',
-          destination: destination + ' 日本',
-          travelmode: 'transit'
-        });
-        return 'https://www.google.com/maps/dir/?' + params.toString();
-      }
-
-      function addDayRoutes(knownNames) {
+      function addDayRoutes() {
         var previousAccommodation = '';
         document.querySelectorAll('.day-card').forEach(function (day) {
           var stops = [];
           day.querySelectorAll('.event').forEach(function (event) {
-            var name = knownNames.get(normalizeName(plainName(event.querySelector('.event-text'))));
+            var name = getTripLocation(plainName(event.querySelector('.event-text')))?.name;
             if (name) stops.push({ name: name, event: event });
           });
           var firstStop = stops.find(function (stop) {
@@ -36,11 +179,9 @@
           if (previousAccommodation && firstStop && !day.querySelector('.accommodation-route')) {
             var arrivalLink = document.createElement('a');
             arrivalLink.className = 'transit-route accommodation-route';
-            arrivalLink.href = routeUrl(previousAccommodation, firstStop.name);
-            arrivalLink.target = '_blank';
-            arrivalLink.rel = 'noopener noreferrer';
             arrivalLink.textContent = previousAccommodation + ' → ' + firstStop.name;
             arrivalLink.setAttribute('aria-label', '查看前一天住宿 ' + previousAccommodation + ' 到 ' + firstStop.name + ' 的大眾運輸路線');
+            setRouteLink(arrivalLink, previousAccommodation, firstStop.name);
             var arrivalRow = document.createElement('div');
             arrivalRow.className = 'day-arrival-route';
             arrivalRow.appendChild(arrivalLink);
@@ -52,52 +193,46 @@
             var destination = stops[index + 1].name;
             var link = document.createElement('a');
             link.className = 'transit-route';
-            link.href = routeUrl(stop.name, destination);
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
             link.textContent = '→ ' + destination;
             link.setAttribute('aria-label', '查看 ' + stop.name + ' 到 ' + destination + ' 的大眾運輸路線');
+            setRouteLink(link, stop.name, destination);
             stop.event.appendChild(link);
           });
           var accommodation = day.querySelector('.accommodation-event .event-text');
           var accommodationName = accommodation ? plainName(accommodation) : '';
-          previousAccommodation = knownNames.get(normalizeName(accommodationName)) || accommodationName;
+          previousAccommodation = getTripLocation(accommodationName)?.name || accommodationName;
         });
       }
 
       function addMapLinks() {
-        var knownNames = new Map();
-        document.querySelectorAll('.spot-name').forEach(function (place) {
-          var chinese = Array.from(place.childNodes).filter(function (node) {
-            return node.nodeType === 3;
-          }).map(function (node) { return node.textContent; }).join('').trim();
-          var english = place.querySelector('.spot-en');
-          [chinese, english ? english.textContent : ''].forEach(function (name) {
-            if (name.trim()) knownNames.set(normalizeName(name), chinese || name.trim());
-          });
-        });
-        // Food rows use their first non-empty cell as the restaurant name.
-        document.querySelectorAll('.food-row .food-cell:first-child').forEach(function (cell) {
-          var name = plainName(cell);
-          if (name && !/^(名稱|餐廳|餐廳名稱|店名|name|restaurant)$/i.test(name)) {
-            knownNames.set(normalizeName(name), name);
-          }
-        });
-        (window.TRIP_SPOT_REFERENCES || []).forEach(function (name) {
-          if (typeof name !== 'string' || !name.trim()) return;
-          knownNames.set(normalizeName(name), name.trim());
-        });
-        addDayRoutes(knownNames);
-        var places = document.querySelectorAll('.spot-list .spot-name');
+        addDayRoutes();
+        var places = document.querySelectorAll('.spot-list .spot-name, .food-name');
         places.forEach(function (place) {
           try {
-            var target = place.closest('li');
+            var isFood = place.classList.contains('food-name');
+            var target = place.closest(isFood ? '.food-row' : 'li');
             if (!target || target.querySelector('[data-trip-map]')) return;
             var name = Array.from(place.childNodes).filter(function (node) {
               return node.nodeType === 3;
             }).map(function (node) { return node.textContent; }).join('').trim();
-            if (!name) name = (place.querySelector('.spot-en')?.textContent || '').trim();
+            if (isFood) name = plainName(place);
+            else if (!name) name = (place.querySelector('.spot-en')?.textContent || '').trim();
+            if (isFood && /^(名稱|餐廳|餐廳名稱|店名|name|restaurant)$/i.test(name)) return;
             if (!name) return;
+            var savedMapUrl = getTripLocation(name)?.url || '';
+            if (/^https?:\/\//i.test(savedMapUrl)) {
+              var savedMapLink = document.createElement('a');
+              savedMapLink.className = 'map-toggle';
+              savedMapLink.setAttribute('data-trip-map', 'true');
+              savedMapLink.href = savedMapUrl;
+              savedMapLink.target = '_blank';
+              savedMapLink.rel = 'noopener noreferrer';
+              savedMapLink.textContent = '顯示地圖';
+              savedMapLink.setAttribute('aria-label', '在新分頁開啟 ' + name + ' 的地圖');
+              target.appendChild(savedMapLink);
+              target.classList.add('has-map');
+              return;
+            }
             var panel = document.createElement('div');
             panel.className = 'event-map spot-map';
             panel.setAttribute('data-trip-map', 'true');
