@@ -1,23 +1,57 @@
   <script>
-    function showError(error) {
-      closeSpotImageDialog();
+    function showError(error, section) {
       const message = error && error.message ? error.message : String(error || '未知錯誤');
       console.error('讀取旅遊資料失敗：', error);
-      document.getElementById('schedule-grid').innerHTML = `<div class="error-box">資料讀取失敗：${escapeHtml(message)}</div>`;
-      document.getElementById('spot-groups').innerHTML = '';
-      document.getElementById('food-content').innerHTML = '';
-      const hotelChip = document.getElementById('trip-hotels');
-      if (hotelChip) hotelChip.textContent = '住宿：讀取失敗';
+      const markup = `<div class="error-box">資料讀取失敗：${escapeHtml(message)}</div>`;
+      if (section === 'details') {
+        closeSpotImageDialog();
+        document.getElementById('spot-groups').innerHTML = markup;
+        document.getElementById('food-content').innerHTML = markup;
+        document.getElementById('trip-hotels').textContent = '住宿：讀取失敗';
+      } else {
+        document.getElementById('schedule-grid').innerHTML = markup;
+        document.getElementById('trip-dates').textContent = '行程日期：讀取失敗';
+        document.getElementById('updated-at').textContent = '讀取失敗';
+      }
     }
 
     function loadTripData() {
-      removeLegacyKobeSection();
+      const startedAt = performance.now();
+      let scheduleSettled = false;
+      let details = null;
+      let mapsReady = false;
+      function initializeMapsWhenReady() {
+        if (!scheduleSettled || !details || mapsReady) return;
+        mapsReady = true;
+        renderTripMaps(details);
+      }
       google.script.run
         .withSuccessHandler(function (data) {
-          try { renderTrip(data); } catch (error) { showError(error); }
+          try {
+            renderTripSchedule(data);
+            console.info('行程顯示耗時（毫秒）：', Math.round(performance.now() - startedAt));
+          } catch (error) { showError(error, 'schedule'); }
+          scheduleSettled = true;
+          initializeMapsWhenReady();
         })
-        .withFailureHandler(showError)
-        .getTripData();
+        .withFailureHandler(function (error) {
+          showError(error, 'schedule');
+          scheduleSettled = true;
+          initializeMapsWhenReady();
+        })
+        .getScheduleData();
+
+      google.script.run
+        .withSuccessHandler(function (data) {
+          try {
+            renderTripDetails(data);
+            details = data;
+            console.info('其他旅遊資料顯示耗時（毫秒）：', Math.round(performance.now() - startedAt));
+          } catch (error) { showError(error, 'details'); }
+          initializeMapsWhenReady();
+        })
+        .withFailureHandler(function (error) { showError(error, 'details'); })
+        .getTripDetails();
     }
 
     loadTripData();

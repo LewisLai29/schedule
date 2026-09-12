@@ -30,12 +30,6 @@
       return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
     }
 
-    function buttonMarkup(cell, label) {
-      const url = cellUrl(cell);
-      if (!url) return '';
-      return `<a class="link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
-    }
-
     function renderFood(rows) {
       const nonEmptyRows = rows.filter((row) => row.some((cell) => cellText(cell)));
       if (!nonEmptyRows.length) {
@@ -52,12 +46,6 @@
         }).join('');
         return `<div class="food-row"><div class="food-item-content">${cells}</div></div>`;
       }).join('')}</div>`;
-    }
-
-    function removeLegacyKobeSection() {
-      document.getElementById('kobe')?.remove();
-      document.getElementById('kobe-spots')?.remove();
-      document.querySelectorAll('.nav a[href="#kobe"]').forEach((link) => link.remove());
     }
 
     function renderHotels(rows) {
@@ -77,14 +65,18 @@
       if (chip) chip.textContent = `住宿：${names.length ? names.join('、') : '尚未填寫'}`;
     }
 
-    function renderTrip(data) {
-      removeLegacyKobeSection();
-      renderHotels(data.hotel || []);
+    function renderTripSchedule(data) {
       renderSchedule(data.schedule || []);
+      document.getElementById('updated-at').textContent = data.updatedAt || '—';
+    }
 
+    function renderTripDetails(data) {
+      renderHotels(data.hotel || []);
       renderSpotSheets(data);
       renderFood(data.food || []);
-      document.getElementById('updated-at').textContent = data.updatedAt || '—';
+    }
+
+    function renderTripMaps(data) {
       try {
         window.TRIP_MAP_DATA_ERROR = data.mapLocationError || '';
         document.getElementById('trip-map-status')?.remove();

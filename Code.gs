@@ -1,8 +1,8 @@
 const SPREADSHEET_ID = '1sJZjqZ60cUJrMvfbPUM6EwoG4wZf5S-BTWs_5or5yEw';
 
 const SOURCE_RANGES = {
-  schedule: { sheetName: 'schedule', range: 'A1:K100', expandMergedCells: true },
-  food: { sheetName: 'food', range: 'A1:K100' },
+  schedule: { sheetName: 'schedule', range: 'A1:K100', rowCount: 100, columnCount: 11, expandMergedCells: true },
+  food: { sheetName: 'food', range: 'A1:K100', rowCount: 100, columnCount: 11 },
 };
 
 function doGet() {
@@ -13,58 +13,196 @@ function doGet() {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-/**
- * Return only the travel data needed by Index.html.
- * The spreadsheet stays private because this function runs as the deployer.
- */
 function include_(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
 function getTripData() {
-  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const spotSheets = collectSpotSheets_(spreadsheet);
-  const food = readRichRange_(spreadsheet, SOURCE_RANGES.food);
-  const hotelSheet = spreadsheet.getSheets().find(
-    (sheet) => sheet.getName().trim().toLowerCase() === 'hotel'
-  );
-  const hotel = hotelSheet ? readRichRange_(spreadsheet, {
-    sheetName: hotelSheet.getName(),
-    range: hotelSheet.getDataRange().getA1Notation(),
-  }) : [];
-
-  let mapLocationError = '';
-  try {
-    const mapSheets = spotSheets.concat([{ name: SOURCE_RANGES.food.sheetName, rows: food }]);
-    if (hotelSheet) mapSheets.push({ name: hotelSheet.getName(), rows: hotel });
-    readMapChipUrls_(mapSheets);
-  } catch (error) {
-    // A Maps integration problem must not prevent the itinerary from loading.
-    mapLocationError = '地圖智慧方塊讀取失敗：' + (error.message || String(error));
-    console.warn(mapLocationError);
-  }
-
+  // Preserve the original endpoint for older HTML and editor diagnostics.
+  const scheduleData = getScheduleData();
+  const details = getTripDetails();
   return {
-    schedule: readRichRange_(spreadsheet, SOURCE_RANGES.schedule),
-    food,
-    // Keep older deployed HTML working while the frontend files are updated.
-    // These aliases use discovered sheets; neither sheet is required to exist.
-    kobeSpot: (spotSheets.find((sheet) => sheet.name.toLowerCase() === 'kobe spot') || {}).rows || [],
-    spot: (spotSheets.find((sheet) => sheet.name.toLowerCase() === 'spot') || {}).rows || [],
-    spotSheets,
-    mapLocations: collectMapLocations_(spotSheets, hotel, food),
-    mapLocationError,
-    hotel,
-    spotReferences: collectSpotReferences_(spreadsheet, spotSheets, hotel),
-    updatedAt: Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      'yyyy-MM-dd HH:mm'
-    ),
+    ...details,
+    ...scheduleData,
+    kobeSpot: (details.spotSheets.find((sheet) => sheet.name.toLowerCase() === 'kobe spot') || {}).rows || [],
+    spot: (details.spotSheets.find((sheet) => sheet.name.toLowerCase() === 'spot') || {}).rows || [],
+    spotReferences: collectSpotReferences_(details.spotSheets, details.hotel || []),
+  };
+}
+
+// Keep the first visible itinerary independent of images and Maps services.
+function getScheduleData() {
+  const startedAt = Date.now();
+  let schedule;
+  try {
+    schedule = readGridRanges_([SOURCE_RANGES.schedule])[0];
+    console.info('schedule: Sheets API batch', Date.now() - startedAt);
+  } catch (error) {
+    console.warn('行程批次讀取未啟用，改用相容讀取：', error.message || String(error));
+    schedule = readRichRange_(SpreadsheetApp.openById(SPREADSHEET_ID), SOURCE_RANGES.schedule);
+    console.info('schedule: compatibility reader', Date.now() - startedAt);
+  }
+  return {
+    schedule,
+    updatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
   };
 }
 
 const MAP_URL_PATTERN = /^https:\/\/(?:maps\.app\.goo\.gl\/|goo\.gl\/maps(?:\/|\?)|(?:www\.|maps\.)?google\.(?:com|co\.jp|com\.tw)\/(?:maps(?:\/|\?)|\?))/i;
+
+// Read formatted text, all link types, formulas and merge bounds together.
+// Keep the field mask narrow: no styling, notes or unrelated sheets.
+function readGridRanges_(configs) {
+  if (typeof Sheets === 'undefined') throw new Error('請啟用 Google Sheets API（v4）。');
+  const response = Sheets.Spreadsheets.get(SPREADSHEET_ID, {
+    ranges: configs.map((config) => "'" + config.sheetName.replace(/'/g, "''") + "'!" + config.range),
+    fields: 'sheets(properties(title),merges(startRowIndex,endRowIndex,startColumnIndex,endColumnIndex),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,userEnteredValue(formulaValue),textFormatRuns(format(link(uri))),chipRuns(chip(richLinkProperties(uri)))))))',
+  });
+  return configs.map((config) => {
+    const sheet = (response.sheets || []).find((item) => item.properties.title === config.sheetName);
+    if (!sheet) throw new Error('批次資料缺少工作表：' + config.sheetName);
+    return gridRows_(sheet, config);
+  });
+}
+
+// All configured ranges start at A1. Empty API cells/rows are omitted, so
+// restore their positions before expanding merges or overlaying image cells.
+function gridRows_(sheet, config) {
+  const rows = Array.from({ length: config.rowCount }, () =>
+    Array.from({ length: config.columnCount }, () => ({ text: '', url: '' })));
+  (sheet.data || []).forEach((grid) => {
+    (grid.rowData || []).forEach((row, rowOffset) => {
+      const rowIndex = (grid.startRow || 0) + rowOffset;
+      if (rowIndex >= rows.length) return;
+      (row.values || []).forEach((value, columnOffset) => {
+        const columnIndex = (grid.startColumn || 0) + columnOffset;
+        if (columnIndex >= config.columnCount) return;
+        const formula = value.userEnteredValue?.formulaValue || '';
+        const links = [...new Set((value.textFormatRuns || [])
+          .map((run) => run.format?.link?.uri).filter(Boolean))];
+        const cell = {
+          text: value.formattedValue || '',
+          url: value.hyperlink || (links.length === 1 ? links[0] : '') || richCellUrl_(null, formula),
+        };
+        if (columnIndex < 2) {
+          const mapUrl = mapChipUrl_(value);
+          if (mapUrl) cell.mapUrl = mapUrl;
+        }
+        if (config.readFirstColumnImages && columnIndex === 0) {
+          const imageUrl = imageFormulaUrl_(formula);
+          if (imageUrl) {
+            rows[rowIndex][columnIndex] = { text: '', url: '', imageUrl, imageAlt: '' };
+            return;
+          }
+        }
+        rows[rowIndex][columnIndex] = cell;
+      });
+    });
+  });
+  if (config.expandMergedCells) {
+    (sheet.merges || []).forEach((merge) => {
+      const firstRow = merge.startRowIndex || 0;
+      const firstColumn = merge.startColumnIndex || 0;
+      const lastRow = Math.min(merge.endRowIndex, rows.length) - 1;
+      const lastColumn = Math.min(merge.endColumnIndex, config.columnCount) - 1;
+      const anchor = rows[firstRow]?.[firstColumn];
+      if (!anchor) return;
+      for (let row = firstRow; row <= lastRow; row += 1) {
+        for (let column = firstColumn; column <= lastColumn; column += 1) {
+          rows[row][column] = { ...anchor, mergeStartRow: firstRow, mergeEndRow: lastRow };
+        }
+      }
+    });
+  }
+  return rows;
+}
+
+function getTripDetails() {
+  const startedAt = Date.now();
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheets = spreadsheet.getSheets();
+  const spots = sheets.filter((sheet) => /spot$/i.test(sheet.getName().trim()));
+  const hotelSheet = sheets.find((sheet) => sheet.getName().trim().toLowerCase() === 'hotel');
+  const configFor = (sheet, images) => {
+    const range = sheet.getDataRange();
+    return {
+      sheetName: sheet.getName(), range: range.getA1Notation(),
+      rowCount: range.getNumRows(), columnCount: range.getNumColumns(),
+      readFirstColumnImages: images,
+    };
+  };
+  const configs = [
+    SOURCE_RANGES.food,
+    ...spots.map((sheet) => configFor(sheet, true)),
+    ...(hotelSheet ? [configFor(hotelSheet, false)] : []),
+  ];
+  let result;
+  try { result = readGridRanges_(configs); }
+  catch (error) {
+    console.warn('旅遊資料批次讀取未啟用，改用相容讀取：', error.message || String(error));
+  }
+  let mapLocationError = '';
+  const usedBatch = Boolean(result);
+  if (usedBatch) {
+    spots.forEach((sheet, index) => applyFirstColumnImages_(result[index + 1], sheet));
+  } else {
+    // Reuse discovery results; only the data reads need a fallback.
+    result = configs.map((config) => readRichRange_(spreadsheet, config,
+      sheets.find((sheet) => sheet.getName() === config.sheetName)));
+    try {
+      readMapChipUrls_(configs.map((config, index) => ({ name: config.sheetName, rows: result[index] })));
+    } catch (error) {
+      mapLocationError = '地圖智慧方塊讀取失敗：' + (error.message || String(error));
+      console.warn(mapLocationError);
+    }
+  }
+  const food = trimEmptyEdges_(result[0]);
+  const spotSheets = spots.map((sheet, index) => ({
+    name: sheet.getName().trim(), rows: trimEmptyEdges_(result[index + 1]),
+  }));
+  const hotel = hotelSheet ? trimEmptyEdges_(result[result.length - 1]) : [];
+  const mapLocations = collectMapLocations_(spotSheets, hotel, food);
+  console.info('details: ' + (usedBatch ? 'Sheets API batch + image columns' : 'compatibility reader'), Date.now() - startedAt);
+  return { food, spotSheets, hotel, mapLocationError, mapLocations };
+}
+
+function imageFormulaUrl_(formula) {
+  const match = String(formula || '').match(/^=\s*IMAGE\(\s*"((?:[^"]|"")*)"\s*(?:[,;)]|$)/i);
+  const url = match ? match[1].replace(/""/g, '"') : '';
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+// Native CellImage URLs are unavailable in Sheets API. Share the overlay
+// between both readers, keeping IMAGE formula URLs when content URLs are absent.
+function applyFirstColumnImages_(rows, sheet, firstRow = 1) {
+  const images = sheet.getRange(firstRow, 1, rows.length, 1).getValues();
+  images.forEach((row, index) => {
+    const value = row[0];
+    if (!value || value.valueType !== SpreadsheetApp.ValueType.IMAGE) return;
+    const imageUrl = value.getContentUrl() || rows[index][0].imageUrl || '';
+    if (/^https?:\/\//i.test(imageUrl)) {
+      rows[index][0] = { text: '', url: '', imageUrl,
+        imageAlt: value.getAltTextDescription() || value.getAltTextTitle() || '' };
+    }
+  });
+}
+
+function mapChipUrl_(value) {
+  const urls = [...new Set((value.chipRuns || [])
+    .map((run) => run.chip?.richLinkProperties?.uri || '')
+    .filter((url) => MAP_URL_PATTERN.test(url)))];
+  // Multiple places in a cell do not identify a single route endpoint.
+  return urls.length === 1 ? urls[0] : '';
+}
+
+function trimEmptyEdges_(rows) {
+  const hasData = (cell) => cell.text || cell.url || cell.mapUrl || cell.imageUrl;
+  rows.forEach((row) => {
+    while (row.length && !hasData(row[row.length - 1])) row.pop();
+  });
+  while (rows.length && !rows[rows.length - 1].length) rows.pop();
+  return rows;
+}
 
 // Place smart chips store their URLs in chipRuns, not RichTextValue hyperlinks.
 // Read only the two location columns, in a single Sheets API request.
@@ -87,11 +225,8 @@ function readMapChipUrls_(mapSheets) {
         (row.values || []).forEach((value, columnOffset) => {
           const cell = rows[(grid.startRow || 0) + rowOffset]?.[(grid.startColumn || 0) + columnOffset];
           if (!cell) return;
-          const urls = [...new Set((value.chipRuns || [])
-            .map((run) => run.chip?.richLinkProperties?.uri || '')
-            .filter((url) => MAP_URL_PATTERN.test(url)))];
-          // Multiple places in a cell do not identify a single route endpoint.
-          if (urls.length === 1) cell.mapUrl = urls[0];
+          const url = mapChipUrl_(value);
+          if (url) cell.mapUrl = url;
         });
       });
     });
@@ -100,9 +235,7 @@ function readMapChipUrls_(mapSheets) {
 
 // Initial page loading must never wait for Google Maps network requests.
 function collectMapLocations_(spotSheets, hotelRows, foodRows = []) {
-  const resolved = new Map();
   const locations = [];
-  const cache = CacheService.getScriptCache();
   spotSheets.map((sheet) => sheet.rows).concat([hotelRows, foodRows]).forEach((rows) => {
     rows.forEach((row) => {
       const name = (row[0]?.text || row[1]?.text || '').trim();
@@ -110,12 +243,18 @@ function collectMapLocations_(spotSheets, hotelRows, foodRows = []) {
       const url = [secondary.mapUrl, secondary.url, secondary.text, row[0]?.mapUrl, row[0]?.url, row[0]?.text]
         .map((value) => String(value || '').trim()).find((value) => MAP_URL_PATTERN.test(value)) || '';
       if (!name || !url) return;
-      if (!resolved.has(url)) {
-        resolved.set(url, cache.get('map-url:v2:' + url) || url);
-      }
-      locations.push({ name, alias: secondary.text || '', originalUrl: url, url: resolved.get(url) });
+      locations.push({ name, alias: secondary.text || '', originalUrl: url, url });
     });
   });
+  // Long full URLs exceed CacheService's key limit and need no expansion.
+  const keys = [...new Set(locations.map((location) => 'map-url:v2:' + location.url))]
+    .filter((key) => key.length <= 250);
+  try {
+    const cached = keys.length ? CacheService.getScriptCache().getAll(keys) : {};
+    locations.forEach((location) => { location.url = cached['map-url:v2:' + location.url] || location.url; });
+  } catch (error) {
+    console.warn('地圖快取暫時無法讀取，使用原始連結：', error.message || String(error));
+  }
   return locations;
 }
 
@@ -147,26 +286,9 @@ function resolveMapLocations(urls) {
 }
 
 /**
- * Read every sheet whose name ends with "spot" so each one can be rendered
- * and used as a schedule-name reference.
+ * Name references retained only for clients using the legacy getTripData API.
  */
-function collectSpotSheets_(spreadsheet) {
-  return spreadsheet.getSheets()
-    .filter((sheet) => /spot$/i.test(sheet.getName().trim()))
-    .map((sheet) => ({
-      name: sheet.getName().trim(),
-      rows: readRichRange_(spreadsheet, {
-        sheetName: sheet.getName(),
-        range: sheet.getDataRange().getA1Notation(),
-        readFirstColumnImages: true,
-      }),
-    }));
-}
-
-/**
- * Collect names from every spot sheet and the optional Hotel reference sheet.
- */
-function collectSpotReferences_(spreadsheet, spotSheets, hotelRows) {
+function collectSpotReferences_(spotSheets, hotelRows) {
   const references = [];
   const seen = new Set();
 
@@ -194,10 +316,10 @@ function collectSpotReferences_(spreadsheet, spotSheets, hotelRows) {
   });
 
   hotelRows.forEach((row) => {
-      row.slice(0, 2).forEach((cell) => {
-        const name = (cell.text || '').trim();
-        if (name) addReference(name);
-      });
+    row.slice(0, 2).forEach((cell) => {
+      const name = (cell.text || '').trim();
+      if (name) addReference(name);
+    });
   });
 
   return references;
@@ -207,9 +329,7 @@ function collectSpotReferences_(spreadsheet, spotSheets, hotelRows) {
  * Read display text and cell-level hyperlinks.
  * Display values preserve the formatting used for dates, times and prices.
  */
-function readRichRange_(spreadsheet, config) {
-  const sheet = spreadsheet.getSheetByName(config.sheetName);
-
+function readRichRange_(spreadsheet, config, sheet = spreadsheet.getSheetByName(config.sheetName)) {
   if (!sheet) {
     throw new Error('找不到工作表：' + config.sheetName);
   }
@@ -218,27 +338,35 @@ function readRichRange_(spreadsheet, config) {
   const values = range.getDisplayValues();
   const richTextValues = range.getRichTextValues();
   const formulas = range.getFormulas();
-  const imageColumn = config.readFirstColumnImages
-    ? sheet.getRange(range.getRow(), 1, range.getNumRows(), 1) : null;
-  const imageValues = imageColumn ? imageColumn.getValues() : [];
-  const imageFormulas = imageColumn ? imageColumn.getFormulas() : [];
+  const rangeRow = range.getRow();
+  const rangeColumn = range.getColumn();
   const mergedCells = new Map();
 
   if (config.expandMergedCells) {
     range.getMergedRanges().forEach((mergedRange) => {
-      const topLeft = mergedRange.getCell(1, 1);
-      const mergedText = topLeft.getDisplayValue() || '';
-      const mergedRichText = topLeft.getRichTextValue();
-      const mergedUrl = mergedRichText ? mergedRichText.getLinkUrl() || '' : '';
-      const firstRow = Math.max(0, mergedRange.getRow() - range.getRow());
+      const sourceRow = mergedRange.getRow() - rangeRow;
+      const sourceColumn = mergedRange.getColumn() - rangeColumn;
+      let mergedText;
+      let mergedUrl;
+      if (sourceRow >= 0 && sourceColumn >= 0) {
+        // Reuse the bulk read instead of two service reads per merged cell.
+        mergedText = values[sourceRow][sourceColumn] || '';
+        mergedUrl = richCellUrl_(richTextValues[sourceRow][sourceColumn], formulas[sourceRow][sourceColumn]);
+      } else {
+        // A range can intersect a merge whose anchor lies outside it.
+        const topLeft = mergedRange.getCell(1, 1);
+        mergedText = topLeft.getDisplayValue() || '';
+        mergedUrl = richCellUrl_(topLeft.getRichTextValue(), topLeft.getFormula());
+      }
+      const firstRow = Math.max(0, sourceRow);
       const lastRow = Math.min(
         values.length - 1,
-        mergedRange.getLastRow() - range.getRow()
+        mergedRange.getLastRow() - rangeRow
       );
-      const firstColumn = Math.max(0, mergedRange.getColumn() - range.getColumn());
+      const firstColumn = Math.max(0, sourceColumn);
       const lastColumn = Math.min(
         values[0].length - 1,
-        mergedRange.getLastColumn() - range.getColumn()
+        mergedRange.getLastColumn() - rangeColumn
       );
 
       for (let rowIndex = firstRow; rowIndex <= lastRow; rowIndex += 1) {
@@ -254,20 +382,10 @@ function readRichRange_(spreadsheet, config) {
     });
   }
 
-  return values.map((row, rowIndex) => row.map((text, columnIndex) => {
-    if (imageColumn && range.getColumn() + columnIndex === 1) {
-      const value = imageValues[rowIndex][0];
-      const formula = imageFormulas[rowIndex][0] || '';
-      const imageFormula = formula.match(/^=\s*IMAGE\(\s*"((?:[^"]|"")*)"\s*(?:[,;)]|$)/i);
-      let imageUrl = imageFormula ? imageFormula[1].replace(/""/g, '"') : '';
-      let imageAlt = '';
-      if (value && value.valueType === SpreadsheetApp.ValueType.IMAGE) {
-        imageUrl = value.getContentUrl() || imageUrl;
-        imageAlt = value.getAltTextDescription() || value.getAltTextTitle() || '';
-      }
-      if (/^https?:\/\//i.test(imageUrl)) {
-        return { text: '', url: '', imageUrl, imageAlt };
-      }
+  const rows = values.map((row, rowIndex) => row.map((text, columnIndex) => {
+    if (config.readFirstColumnImages && rangeColumn + columnIndex === 1) {
+      const imageUrl = imageFormulaUrl_(formulas[rowIndex][columnIndex]);
+      if (imageUrl) return { text: '', url: '', imageUrl, imageAlt: '' };
     }
     const mergedCell = mergedCells.get(`${rowIndex}:${columnIndex}`);
     if (mergedCell) return mergedCell;
@@ -278,6 +396,8 @@ function readRichRange_(spreadsheet, config) {
       url: richCellUrl_(richText, formulas[rowIndex][columnIndex]),
     };
   }));
+  if (config.readFirstColumnImages && rangeColumn === 1) applyFirstColumnImages_(rows, sheet, rangeRow);
+  return rows;
 }
 
 function richCellUrl_(richText, formula) {
