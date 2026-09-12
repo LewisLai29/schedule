@@ -204,8 +204,8 @@
         });
       }
 
-      function addMapLinks() {
-        addDayRoutes();
+      // Place previews always expand inline, independently of route endpoints.
+      function addPlaceMapToggles() {
         var places = document.querySelectorAll('.spot-list .spot-name, .food-name');
         places.forEach(function (place) {
           try {
@@ -219,20 +219,6 @@
             else if (!name) name = (place.querySelector('.spot-en')?.textContent || '').trim();
             if (isFood && /^(名稱|餐廳|餐廳名稱|店名|name|restaurant)$/i.test(name)) return;
             if (!name) return;
-            var savedMapUrl = getTripLocation(name)?.url || '';
-            if (/^https?:\/\//i.test(savedMapUrl)) {
-              var savedMapLink = document.createElement('a');
-              savedMapLink.className = 'map-toggle';
-              savedMapLink.setAttribute('data-trip-map', 'true');
-              savedMapLink.href = savedMapUrl;
-              savedMapLink.target = '_blank';
-              savedMapLink.rel = 'noopener noreferrer';
-              savedMapLink.textContent = '顯示地圖';
-              savedMapLink.setAttribute('aria-label', '在新分頁開啟 ' + name + ' 的地圖');
-              target.appendChild(savedMapLink);
-              target.classList.add('has-map');
-              return;
-            }
             var panel = document.createElement('div');
             panel.className = 'event-map spot-map';
             panel.setAttribute('data-trip-map', 'true');
@@ -306,7 +292,8 @@
         });
       }
       return function initializeTripMaps() {
-        try { addMapLinks(); } catch (error) { console.warn('地圖功能未啟用：', error); }
+        try { addDayRoutes(); } catch (error) { console.warn('交通路線未啟用：', error); }
+        try { addPlaceMapToggles(); } catch (error) { console.warn('小地圖未啟用：', error); }
       };
     })();
   </script>
