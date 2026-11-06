@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#102b49">
-  <title>岡山保佑一定好天氣｜旅遊 Schedule</title>
+  <title><?= tripSettings.title ?></title>
   <?!= include_('Styles'); ?>
   <?!= include_('SpotGalleryStyles'); ?>
 </head>
@@ -13,12 +13,16 @@
   <header class="hero">
     <div class="shell hero-content">
       <div class="eyebrow">JAPAN TRIP · TRAVEL SCHEDULE</div>
-      <h1>岡山保佑一定好天氣</h1>
-      <p class="hero-subtitle">岡山・倉敷・姬路・神戶，還有尾道的景點備忘。</p>
+      <h1><?= tripSettings.title ?></h1>
+      <? if (tripSettings.subtitle) { ?>
+      <p class="hero-subtitle"><?= tripSettings.subtitle ?></p>
+      <? } ?>
       <div class="hero-meta">
         <span class="meta-chip" id="trip-dates">讀取行程日期中...</span>
         <span class="meta-chip" id="trip-hotels">住宿：讀取中...</span>
-        <span class="meta-chip">航班：IT714 / IT715</span>
+        <? if (tripSettings.flights) { ?>
+        <span class="meta-chip">航班：<?= tripSettings.flights ?></span>
+        <? } ?>
       </div>
     </div>
   </header>

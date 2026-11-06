@@ -1,4 +1,4 @@
-const SPREADSHEET_ID = '1sJZjqZ60cUJrMvfbPUM6EwoG4wZf5S-BTWs_5or5yEw';
+const SPREADSHEET_ID = '1VNJX4mWQhhdLI-dv_yp7yoomvDIGOkFdt1Irnkr4Iy0';
 
 const SOURCE_RANGES = {
   schedule: { sheetName: 'schedule', range: 'A1:K100', rowCount: 100, columnCount: 11, expandMergedCells: true },
@@ -6,11 +6,33 @@ const SOURCE_RANGES = {
 };
 
 function doGet() {
-  return HtmlService
-    .createTemplateFromFile('Index')
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const tripSettings = readTripSettings_(spreadsheet);
+  const template = HtmlService.createTemplateFromFile('Index');
+  template.tripSettings = tripSettings;
+
+  return template
     .evaluate()
-    .setTitle('岡山保佑一定好天氣')
+    .setTitle(tripSettings.title)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// Optional settings tab: column A contains keys; column B contains display text.
+function readTripSettings_(spreadsheet) {
+  const settings = {
+    title: spreadsheet.getName(),
+    subtitle: '',
+    flights: '',
+  };
+  const sheet = spreadsheet.getSheetByName('settings');
+  if (!sheet || !sheet.getLastRow()) return settings;
+
+  sheet.getRange(1, 1, sheet.getLastRow(), 2).getDisplayValues().forEach(([key, value]) => {
+    key = key.trim().toLowerCase();
+    value = value.trim();
+    if (Object.prototype.hasOwnProperty.call(settings, key) && value) settings[key] = value;
+  });
+  return settings;
 }
 
 function include_(filename) {
@@ -46,6 +68,10 @@ function getScheduleData() {
     schedule,
     updatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
   };
+}
+
+function getTripDetails() {
+  return readTripDetails_();
 }
 
 const MAP_URL_PATTERN = /^https:\/\/(?:maps\.app\.goo\.gl\/|goo\.gl\/maps(?:\/|\?)|(?:www\.|maps\.)?google\.(?:com|co\.jp|com\.tw)\/(?:maps(?:\/|\?)|\?))/i;
@@ -84,7 +110,7 @@ function gridRows_(sheet, config) {
           text: value.formattedValue || '',
           url: value.hyperlink || (links.length === 1 ? links[0] : '') || richCellUrl_(null, formula),
         };
-        if (columnIndex < 2) {
+        if (columnIndex < (config.mapColumnCount || 2)) {
           const mapUrl = mapChipUrl_(value);
           if (mapUrl) cell.mapUrl = mapUrl;
         }
@@ -117,12 +143,14 @@ function gridRows_(sheet, config) {
   return rows;
 }
 
-function getTripDetails() {
+// The explicit modes are for editor diagnostics; normal loading uses auto.
+function readTripDetails_(mode = 'auto') {
   const startedAt = Date.now();
   const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheets = spreadsheet.getSheets();
   const spots = sheets.filter((sheet) => /spot$/i.test(sheet.getName().trim()));
   const hotelSheet = sheets.find((sheet) => sheet.getName().trim().toLowerCase() === 'hotel');
+  const settingsSheet = sheets.find((sheet) => sheet.getName() === 'settings');
   const configFor = (sheet, images) => {
     const range = sheet.getDataRange();
     return {
@@ -135,11 +163,18 @@ function getTripDetails() {
     SOURCE_RANGES.food,
     ...spots.map((sheet) => configFor(sheet, true)),
     ...(hotelSheet ? [configFor(hotelSheet, false)] : []),
+    ...(settingsSheet ? [{
+      sheetName: settingsSheet.getName(), range: 'A1:C' + Math.max(1, settingsSheet.getLastRow()),
+      rowCount: Math.max(1, settingsSheet.getLastRow()), columnCount: 3, mapColumnCount: 3,
+    }] : []),
   ];
   let result;
-  try { result = readGridRanges_(configs); }
-  catch (error) {
-    console.warn('旅遊資料批次讀取未啟用，改用相容讀取：', error.message || String(error));
+  if (mode !== 'compatible') {
+    try { result = readGridRanges_(configs); }
+    catch (error) {
+      if (mode === 'batch') throw error;
+      console.warn('旅遊資料批次讀取未啟用，改用相容讀取：', error.message || String(error));
+    }
   }
   let mapLocationError = '';
   const usedBatch = Boolean(result);
@@ -150,7 +185,9 @@ function getTripDetails() {
     result = configs.map((config) => readRichRange_(spreadsheet, config,
       sheets.find((sheet) => sheet.getName() === config.sheetName)));
     try {
-      readMapChipUrls_(configs.map((config, index) => ({ name: config.sheetName, rows: result[index] })));
+      readMapChipUrls_(configs.map((config, index) => ({
+        name: config.sheetName, rows: result[index], columnCount: config.mapColumnCount || 2,
+      })));
     } catch (error) {
       mapLocationError = '地圖智慧方塊讀取失敗：' + (error.message || String(error));
       console.warn(mapLocationError);
@@ -160,10 +197,32 @@ function getTripDetails() {
   const spotSheets = spots.map((sheet, index) => ({
     name: sheet.getName().trim(), rows: trimEmptyEdges_(result[index + 1]),
   }));
-  const hotel = hotelSheet ? trimEmptyEdges_(result[result.length - 1]) : [];
+  const settingsHotels = settingsSheet ? settingsHotelRows_(result[result.length - 1]) : null;
+  const hotelIndex = 1 + spots.length;
+  const hotel = trimEmptyEdges_(settingsHotels === null
+    ? (hotelSheet ? result[hotelIndex] : []) : settingsHotels);
   const mapLocations = collectMapLocations_(spotSheets, hotel, food);
   console.info('details: ' + (usedBatch ? 'Sheets API batch + image columns' : 'compatibility reader'), Date.now() - startedAt);
   return { food, spotSheets, hotel, mapLocationError, mapLocations };
+}
+
+// A hotels key starts a block; the next non-empty key ends it.
+// null means no override, while an empty block explicitly clears old hotels.
+function settingsHotelRows_(rows) {
+  let inHotels = false;
+  let found = false;
+  const hotels = [];
+  rows.forEach((row) => {
+    const key = String(row[0]?.text || '').trim().toLowerCase();
+    if (key) {
+      inHotels = key === 'hotels';
+      if (inHotels) found = true;
+    }
+    if (!inHotels) return;
+    const cells = [row[1] || { text: '', url: '' }, row[2] || { text: '', url: '' }];
+    if (cells.some((cell) => cell.text || cell.url || cell.mapUrl)) hotels.push(cells);
+  });
+  return found ? hotels : null;
 }
 
 function imageFormulaUrl_(formula) {
@@ -205,7 +264,7 @@ function trimEmptyEdges_(rows) {
 }
 
 // Place smart chips store their URLs in chipRuns, not RichTextValue hyperlinks.
-// Read only the two location columns, in a single Sheets API request.
+// Read location columns, including settings column C, in one API request.
 function readMapChipUrls_(mapSheets) {
   const sheets = mapSheets.filter((sheet) => sheet.rows.length);
   if (!sheets.length) return;
@@ -214,7 +273,8 @@ function readMapChipUrls_(mapSheets) {
   }
   const byName = new Map(sheets.map((sheet) => [sheet.name.trim(), sheet.rows]));
   const response = Sheets.Spreadsheets.get(SPREADSHEET_ID, {
-    ranges: sheets.map((sheet) => "'" + sheet.name.replace(/'/g, "''") + "'!A1:B" + sheet.rows.length),
+    ranges: sheets.map((sheet) => "'" + sheet.name.replace(/'/g, "''") + "'!A1:"
+      + (sheet.columnCount === 3 ? 'C' : 'B') + sheet.rows.length),
     fields: 'sheets(properties(title),data(startRow,startColumn,rowData(values(chipRuns(chip(richLinkProperties(uri)))))))',
   });
   (response.sheets || []).forEach((sheet) => {
@@ -422,4 +482,31 @@ function testRead() {
     mapLocations: data.mapLocations,
     updatedAt: data.updatedAt,
   }));
+}
+
+/**
+ * Run manually in the editor to compare actual backend reads, without the
+ * automatic compatibility fallback hiding a broken Sheets API setup.
+ * Re-run for representative results; service warm-up affects each sample.
+ */
+function testReadPerformance() {
+  const results = [];
+  const readers = [
+    ['schedule-compatible', () => readRichRange_(SpreadsheetApp.openById(SPREADSHEET_ID), SOURCE_RANGES.schedule)],
+    ['schedule-batch', () => readGridRanges_([SOURCE_RANGES.schedule])[0]],
+    ['details-compatible', () => readTripDetails_('compatible')],
+    ['details-batch', () => readTripDetails_('batch')],
+  ];
+  readers.forEach(([name, read]) => {
+    const startedAt = Date.now();
+    try {
+      const data = read();
+      results.push({ name, durationMs: Date.now() - startedAt,
+        payloadBytes: Utilities.newBlob(JSON.stringify(data)).getBytes().length });
+    } catch (error) {
+      results.push({ name, durationMs: Date.now() - startedAt, error: error.message || String(error) });
+    }
+  });
+  Logger.log(JSON.stringify(results));
+  return results;
 }

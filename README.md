@@ -2,6 +2,33 @@
 
 Google Apps Script HTML Service 行程網站。
 
+## 自訂標題、副標題與航班
+
+在同一份 Google Sheet 新增名為 `settings` 的分頁，A 欄填設定名稱、B 欄填顯示文字：
+
+| A 欄 | B 欄（範例） |
+| --- | --- |
+| title | 岡山保佑一定好天氣 |
+| subtitle | 岡山・倉敷・姬路・神戶，還有尾道的景點備忘。 |
+| flights | IT714 / IT715 |
+
+`title` 同時套用到瀏覽器標題與頁面大標題；`flights` 只填航班內容，網頁會自動加上「航班：」。
+沒有 `settings` 分頁或對應值留白時，標題使用試算表名稱，副標題與航班不顯示；兩者只使用 `settings` 中填寫的內容。
+設定在開啟網頁時讀取，修改 Sheet 後重新整理網頁即可；首次更新程式仍須重新部署 Apps Script 版本。
+設定值以純文字輸出，不會當成 HTML 執行。
+
+住宿也可以移到 `settings`，格式如下：
+
+| A 欄 | B 欄（住宿名稱） | C 欄（位置） |
+| --- | --- | --- |
+| hotels | Dormy inn Okayama | 飯店的 Google Maps 智慧方塊或連結 |
+| （留白） | Richmond Hotel Himeji | 飯店的 Google Maps 智慧方塊或連結 |
+
+`hotels` 當列即為第一筆住宿，後續 A 欄留白可繼續新增，遇到下一個非空白設定名稱時結束。
+住宿名稱與位置沿用原本 `hotel` 分頁的處理規則，支援地圖智慧方塊、超連結與純文字 Maps 網址。
+有 `hotels` 設定時優先使用這份清單；未設定時繼續讀取舊的 `hotel` 分頁。
+若要清空住宿，可保留 `hotels`，將其住宿區塊的 B、C 欄清空。
+
 ## 檔案職責
 
 | 檔案 | 職責 |
