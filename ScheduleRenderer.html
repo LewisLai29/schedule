@@ -67,7 +67,7 @@
         .filter((event) => !(index === totalColumns && event.isAccommodation));
       const isFlightDay = displayEvents.some((event) => /IT714|IT715|TPE|OKJ|機場|起飛|降落/.test(event.text));
       const title = index === 1 ? '抵達日本' : index === 8 ? '回程' : (place || '彈性安排');
-      const label = place || (index === 1 ? '前往岡山' : index === 8 ? '返回岡山' : '—');
+      const label = place || (index === 1 ? '旅程起點' : index === totalColumns ? '踏上歸途' : '自由探索');
       const tag = isFlightDay ? '航班日' : displayEvents.length ? '行程' : '待補';
 
       const eventMarkup = displayEvents.length
@@ -76,12 +76,12 @@
               ${event.isAccommodation ? '' : `<div class="event-time">${escapeHtml(event.time)}</div>`}
               <div class="event-text">${event.isJourney ? '<span class="journey-icon" aria-hidden="true">✈</span>' : ''}${linkMarkup({ text: event.text, url: event.url })}</div>
             </div>`).join('')}</div>`
-        : '<div class="empty-day">原始 schedule 尚未填寫行程。</div>';
+        : '<div class="empty-day">這一天還留著空白，給旅途一點隨興的空間。</div>';
 
-      return `<details class="day-card"${isToday ? ' open' : ''}>
+      return `<details class="day-card" id="trip-day-${index}"${isToday ? ' data-today="true" open' : ''}>
         <summary class="day-label">
           <div class="day-number">DAY ${String(index).padStart(2, '0')}</div>
-          <div class="day-date">${escapeHtml(date.monthDay)}${date.weekday ? `<br>週${escapeHtml(date.weekday)}` : ''}</div>
+          <div class="day-date">${escapeHtml(date.monthDay)}${date.weekday ? `<span class="day-weekday">週${escapeHtml(date.weekday)}</span>` : ''}</div>
           <div class="day-place">${escapeHtml(label)}</div>
         </summary>
         <div class="day-body">
@@ -96,6 +96,15 @@
         const summary = card.querySelector('summary');
         let animation = null;
         let expanded = card.open;
+        card.addEventListener('schedule-open', () => {
+          if (animation) {
+            animation.onfinish = null;
+            animation.cancel();
+            animation = null;
+          }
+          expanded = true;
+          card.open = true;
+        });
         summary.addEventListener('click', (event) => {
           if (event.target.closest('a, button')) return;
           event.preventDefault();
@@ -126,6 +135,46 @@
       });
     }
 
+    function initializeScheduleNavigation() {
+      const cards = Array.from(document.querySelectorAll('.day-card'));
+      const todayCard = cards.find((card) => card.dataset.today === 'true');
+      const target = todayCard || cards[0];
+      const picker = document.getElementById('day-picker');
+      const navigation = document.getElementById('day-navigation');
+      if (!picker || !navigation || !target) return;
+
+      // Keep every day in the document so maps and desktop accordions retain their state.
+      const selectDay = (card, scroll) => {
+        card.dispatchEvent(new Event('schedule-open'));
+        picker.querySelectorAll('button').forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.getAttribute('aria-controls') === card.id));
+        });
+        if (scroll) {
+          card.querySelector('summary').focus({ preventScroll: true });
+          card.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+        }
+      };
+      picker.replaceChildren();
+      cards.forEach((card, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-controls', card.id);
+        button.setAttribute('aria-pressed', String(card === target));
+        const date = card.querySelector('.day-date').cloneNode(true);
+        const label = document.createElement('span');
+        label.className = 'picker-day-label';
+        label.textContent = card === todayCard ? '今天' : `第 ${index + 1} 天`;
+        button.append(label, date);
+        button.addEventListener('click', () => selectDay(card, true));
+        picker.append(button);
+      });
+      navigation.hidden = false;
+      document.getElementById('day-navigation-hint').textContent = todayCard ? '今天的行程已展開' : '左右滑動查看日期';
+      if (todayCard || window.matchMedia('(max-width: 760px)').matches) selectDay(target, false);
+      const selected = picker.querySelector('[aria-pressed="true"]');
+      picker.scrollLeft = selected.offsetLeft - picker.offsetLeft;
+    }
+
     function renderSchedule(rows) {
       const columns = 8;
       const firstDate = parseDate(cellText(rows[0]?.[1]));
@@ -136,6 +185,7 @@
         (_, index) => scheduleCard(rows, index + 1, index + 1, columns)
       ).join('');
       enableScheduleAnimation();
+      initializeScheduleNavigation();
 
       const sidePlace = cellText(rows[1]?.[10]);
       const sideItems = [];
@@ -152,7 +202,7 @@
 
       document.getElementById('schedule-notes').innerHTML = `<div class="note-card" style="margin-top: 18px;">
         <h3>${escapeHtml(sidePlace || '其他景點備忘')}</h3>
-        <p>這組內容在原始 schedule 的日期行程旁獨立列出，先保留為備選景點。</p>
+        <p>先收藏起來，留給旅途中的自由時光。</p>
         <div class="chip-list">${sideItems.map((cell) => `<span class="place-chip">${linkMarkup(cell)}</span>`).join('')}</div>
       </div>`;
     }

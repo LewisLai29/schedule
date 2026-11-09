@@ -9,6 +9,7 @@
         document.getElementById('food-content').innerHTML = markup;
         document.getElementById('trip-hotels').textContent = '住宿：讀取失敗';
       } else {
+        document.getElementById('day-navigation').hidden = true;
         document.getElementById('schedule-grid').innerHTML = markup;
         document.getElementById('trip-dates').textContent = '行程日期：讀取失敗';
         document.getElementById('updated-at').textContent = '讀取失敗';
@@ -54,5 +55,41 @@
         .getTripDetails();
     }
 
+    function initializeMobileLayout() {
+      const media = window.matchMedia('(max-width: 760px)');
+      const tripInfo = document.getElementById('trip-info');
+      tripInfo.open = !media.matches;
+      media.addEventListener('change', () => { tripInfo.open = !media.matches; });
+
+      const sections = Array.from(document.querySelectorAll('main > .section'));
+      const links = document.querySelectorAll('.mobile-nav [data-section], .nav a');
+      let scheduled = false;
+      const updateNavigation = () => {
+        scheduled = false;
+        const position = Math.min(180, window.innerHeight / 3);
+        let current = sections[0];
+        sections.forEach((section) => {
+          if (section.getBoundingClientRect().top <= position) current = section;
+        });
+        // The last section can be too short to reach the top of the viewport.
+        if (window.scrollY > 0 && Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight - 2) {
+          current = sections[sections.length - 1];
+        }
+        links.forEach((link) => {
+          if (link.hash === `#${current.id}`) link.setAttribute('aria-current', 'location');
+          else link.removeAttribute('aria-current');
+        });
+      };
+      const queueUpdate = () => {
+        if (!scheduled) { scheduled = true; requestAnimationFrame(updateNavigation); }
+      };
+      window.addEventListener('scroll', queueUpdate, { passive: true });
+      window.addEventListener('resize', queueUpdate);
+      // Async loading and accordion expansion can move the section boundaries.
+      if (window.ResizeObserver) new ResizeObserver(queueUpdate).observe(document.querySelector('main'));
+      updateNavigation();
+    }
+
+    initializeMobileLayout();
     loadTripData();
   </script>
