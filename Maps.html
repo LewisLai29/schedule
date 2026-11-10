@@ -86,6 +86,7 @@
     }
 
     function setRouteLink(link, origin, destination) {
+      const compact = link.classList.contains('traffic-map-link');
       const url = routeUrl(origin, destination);
       if (url) {
         link.href = url;
@@ -110,12 +111,12 @@
           if (link.getAttribute('aria-busy') === 'true') return;
           const routeWindow = window.open('about:blank', '_blank');
           if (routeWindow) routeWindow.opener = null;
-          link.textContent = '正在取得路線…';
+          link.textContent = compact ? '查詢中…' : '正在取得路線…';
           link.setAttribute('aria-busy', 'true');
           const fail = function (error) {
             if (routeWindow && !routeWindow.closed) routeWindow.close();
             link.removeAttribute('aria-busy');
-            link.textContent = label + '（無法取得位置，點此重試）';
+            link.textContent = compact ? '重試地圖 ↗' : label + '（無法取得位置，點此重試）';
             link.title = error?.message || '請確認景點或餐廳的地圖連結。';
           };
           const pendingUrls = [origin, destination].map(getTripLocation)
@@ -140,7 +141,7 @@
                 link.target = '_blank';
                 link.rel = 'noopener noreferrer';
                 if (routeWindow && !routeWindow.closed) routeWindow.location.replace(resolvedRoute);
-                else link.textContent = label + '（路線已就緒，點此開啟）';
+                else link.textContent = compact ? label : label + '（路線已就緒，點此開啟）';
               } catch (error) { fail(error); }
             }).withFailureHandler(fail).resolveMapLocations(pendingUrls);
           } catch (error) { fail(error); }
@@ -150,7 +151,8 @@
         link.removeAttribute('href');
         link.setAttribute('aria-disabled', 'true');
         link.title = '無法取得地圖位置：' + missing.join('、');
-        link.textContent += window.TRIP_MAP_DATA_ERROR ? '（地圖資料未載入）' : '（無法取得位置）';
+        if (compact) link.textContent = '無位置資料';
+        else link.textContent += window.TRIP_MAP_DATA_ERROR ? '（地圖資料未載入）' : '（無法取得位置）';
         link.setAttribute('aria-label', link.textContent + '。' + link.title);
       }
     }
@@ -166,6 +168,24 @@
       }
 
       function addDayRoutes() {
+        function trafficBefore(event) {
+          var node = event.previousElementSibling;
+          var traffic = null;
+          while (node?.classList.contains('schedule-traffic')) {
+            traffic = node;
+            node = node.previousElementSibling;
+          }
+          return traffic;
+        }
+        function attachTrafficRoute(link, origin, destination, event) {
+          var traffic = trafficBefore(event);
+          if (!traffic) return false;
+          link.classList.add('traffic-map-link');
+          link.textContent = '地圖導引 ↗';
+          setRouteLink(link, origin, destination);
+          traffic.querySelector('.traffic-map-slot').appendChild(link);
+          return true;
+        }
         var previousAccommodation = '';
         document.querySelectorAll('.day-card').forEach(function (day) {
           var stops = [];
@@ -181,22 +201,27 @@
             arrivalLink.className = 'transit-route accommodation-route';
             arrivalLink.textContent = previousAccommodation + ' → ' + firstStop.name;
             arrivalLink.setAttribute('aria-label', '查看前一天住宿 ' + previousAccommodation + ' 到 ' + firstStop.name + ' 的大眾運輸路線');
-            setRouteLink(arrivalLink, previousAccommodation, firstStop.name);
-            var arrivalRow = document.createElement('div');
-            arrivalRow.className = 'day-arrival-route';
-            arrivalRow.appendChild(arrivalLink);
-            var events = day.querySelector('.events');
-            events.parentNode.insertBefore(arrivalRow, events);
+            if (!attachTrafficRoute(arrivalLink, previousAccommodation, firstStop.name, firstStop.event)) {
+              setRouteLink(arrivalLink, previousAccommodation, firstStop.name);
+              var arrivalRow = document.createElement('div');
+              arrivalRow.className = 'day-arrival-route';
+              arrivalRow.appendChild(arrivalLink);
+              var events = day.querySelector('.events');
+              events.parentNode.insertBefore(arrivalRow, events);
+            }
           }
           stops.slice(0, -1).forEach(function (stop, index) {
-            if (stop.event.querySelector('.transit-route:not(.accommodation-route)')) return;
+            if (stop.event.querySelector('.transit-route:not(.accommodation-route)')
+              || trafficBefore(stops[index + 1].event)?.querySelector('.transit-route')) return;
             var destination = stops[index + 1].name;
             var link = document.createElement('a');
             link.className = 'transit-route';
             link.textContent = '→ ' + destination;
             link.setAttribute('aria-label', '查看 ' + stop.name + ' 到 ' + destination + ' 的大眾運輸路線');
-            setRouteLink(link, stop.name, destination);
-            stop.event.appendChild(link);
+            if (!attachTrafficRoute(link, stop.name, destination, stops[index + 1].event)) {
+              setRouteLink(link, stop.name, destination);
+              stop.event.appendChild(link);
+            }
           });
           var accommodation = day.querySelector('.accommodation-event .event-text');
           var accommodationName = accommodation ? plainName(accommodation) : '';

@@ -123,6 +123,39 @@
     .event-text a:hover, .note-card a:hover { color: var(--accent); }
     .empty-day { padding: 10px 0 3px; color: var(--muted); font-size: .95rem; }
 
+    /* One transit frame stays beside the continuous itinerary line in both states. */
+    .schedule-traffic { --traffic-indent: 86px; --traffic-line: 69px; position: relative; min-width: 0; margin: 0 0 20px var(--traffic-indent); padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f5f7f1; }
+    .schedule-traffic::before { content: ''; position: absolute; top: -12px; bottom: -34px; left: calc(var(--traffic-line) - var(--traffic-indent) - 1px); width: 1px; background: var(--line); pointer-events: none; }
+    .schedule-traffic:first-child::before { top: 0; }
+    .schedule-traffic:has(+ .accommodation-event)::before { bottom: 0; }
+    .traffic-heading { display: flex; align-items: start; gap: 8px; min-width: 0; font-size: 16px; font-weight: 500; overflow-wrap: anywhere; }
+    .traffic-icon { flex: none; width: 20px; height: 20px; margin-top: 4px; color: var(--blue); }
+    .traffic-actions { position: relative; min-width: 0; margin-top: 4px; }
+    .traffic-map-slot { position: absolute; top: 0; left: 0; width: min(calc(50% - 4px), 142px); }
+    .traffic-notes > summary { display: flex; align-items: center; justify-content: start; gap: 8px; width: fit-content; max-width: 50%; min-height: 44px; margin-left: min(50%, 150px); padding: 8px 0; color: var(--blue); font-size: 14px; cursor: pointer; list-style: none; }
+    .traffic-notes > summary::-webkit-details-marker { display: none; }
+    .traffic-notes > summary::after { content: ''; flex: none; width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+    .traffic-notes[open] > summary::after { transform: rotate(225deg); }
+    .traffic-map-slot:empty + .traffic-notes > summary { margin-left: 0; width: 100%; }
+    .traffic-body { min-width: 0; padding-top: 10px; }
+    .traffic-body > * + * { margin-top: 12px; }
+    .traffic-image { position: relative; display: grid; min-width: 0; width: 100%; padding: 0; border: 0; background: transparent; color: var(--blue); text-align: left; cursor: zoom-in; }
+    .traffic-image img { display: block; width: 100%; height: auto; max-height: 300px; object-fit: contain; }
+    .traffic-image img[hidden] { display: none; }
+    .traffic-image span[hidden] { display: none; }
+    .spot-sheet-image[hidden] { display: none; }
+    .sheet-image-status { display: block; padding: 12px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .traffic-image .traffic-image-label { position: absolute; right: 0; bottom: 0; display: grid; place-items: center; width: 44px; height: 44px; pointer-events: none; }
+    .traffic-image-label svg { width: 28px; height: 28px; padding: 5px; border-radius: 4px; background: #fffef9e6; }
+    .traffic-image .sheet-image-status { min-height: 44px; padding: 8px 0; cursor: pointer; }
+    .traffic-image:disabled { cursor: default; color: var(--muted); }
+    .traffic-supplement { margin-top: 8px; font-size: 16px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .traffic-supplement a { display: inline-block; min-height: 44px; padding: 7px 0; color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+    .traffic-empty, .traffic-load-status { margin: 12px 0 0; color: var(--muted); font-size: 14px; }
+    @media (max-width: 560px) {
+      .schedule-traffic { --traffic-indent: 70px; --traffic-line: 59px; }
+    }
+
     .note-card, .info-card, .food-empty {
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -342,6 +375,10 @@
       .footer-content { font-size: 13px; }
       .footer-update { font-size: 12px; }
     }
+    /* Keep these scoped overrides after the existing route button rules. */
+    .traffic-map-slot > .transit-route { display: flex; align-items: center; min-height: 44px; margin: 0; padding: 8px 0; border: 0; border-radius: 0; background: transparent; color: var(--blue); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+    .traffic-map-slot > .transit-route:hover, .traffic-notes > summary:hover { color: var(--accent); }
+    .traffic-map-slot > .transit-route[aria-disabled="true"] { color: var(--muted); }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
       *, *::before, *::after { animation: none !important; transition: none !important; }

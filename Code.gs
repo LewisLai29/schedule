@@ -1,7 +1,7 @@
 const SPREADSHEET_ID = '1VNJX4mWQhhdLI-dv_yp7yoomvDIGOkFdt1Irnkr4Iy0';
 
 const SOURCE_RANGES = {
-  schedule: { sheetName: 'schedule', range: 'A1:K100', rowCount: 100, columnCount: 11, expandMergedCells: true },
+  schedule: { sheetName: 'schedule', range: 'A1:K100', rowCount: 100, columnCount: 11, expandMergedCells: true, readNotes: true },
   food: { sheetName: 'food', range: 'A1:K100', rowCount: 100, columnCount: 11 },
 };
 
@@ -66,8 +66,32 @@ function getScheduleData() {
   }
   return {
     schedule,
+    ...readTrafficData_(),
     updatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'),
   };
+}
+
+// Optional sheet: a failed traffic read must not hide the itinerary or Maps.
+function readTrafficData_() {
+  try {
+    const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = spreadsheet.getSheets().find((item) => item.getName().trim().toLowerCase() === 'traffic');
+    if (!sheet || !sheet.getLastRow()) return { traffic: [] };
+    const range = sheet.getDataRange();
+    const config = { sheetName: sheet.getName(), range: range.getA1Notation(),
+      rowCount: range.getNumRows(), columnCount: range.getNumColumns(), imageStartColumn: 1, readLinks: true };
+    let rows;
+    try {
+      rows = readGridRanges_([config])[0];
+      if (config.columnCount > 1) applyColumnImages_(rows, sheet, 1, 1, config.columnCount - 1);
+    } catch (error) {
+      rows = readRichRange_(spreadsheet, config, sheet);
+    }
+    return { traffic: rows };
+  } catch (error) {
+    console.warn('交通筆記讀取失敗：', error.message || String(error));
+    return { traffic: [], trafficError: '交通筆記暫時無法載入，請重新整理再試。' };
+  }
 }
 
 function getTripDetails() {
@@ -77,12 +101,13 @@ function getTripDetails() {
 const MAP_URL_PATTERN = /^https:\/\/(?:maps\.app\.goo\.gl\/|goo\.gl\/maps(?:\/|\?)|(?:www\.|maps\.)?google\.(?:com|co\.jp|com\.tw)\/(?:maps(?:\/|\?)|\?))/i;
 
 // Read formatted text, all link types, formulas and merge bounds together.
-// Keep the field mask narrow: no styling, notes or unrelated sheets.
+// Include notes only for the itinerary, linked text only when requested.
 function readGridRanges_(configs) {
   if (typeof Sheets === 'undefined') throw new Error('請啟用 Google Sheets API（v4）。');
   const response = Sheets.Spreadsheets.get(SPREADSHEET_ID, {
     ranges: configs.map((config) => "'" + config.sheetName.replace(/'/g, "''") + "'!" + config.range),
-    fields: 'sheets(properties(title),merges(startRowIndex,endRowIndex,startColumnIndex,endColumnIndex),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,userEnteredValue(formulaValue),textFormatRuns(format(link(uri))),chipRuns(chip(richLinkProperties(uri)))))))',
+    fields: 'sheets(properties(title),merges(startRowIndex,endRowIndex,startColumnIndex,endColumnIndex),data(startRow,startColumn,rowData(values(formattedValue,hyperlink,userEnteredValue(formulaValue),textFormatRuns(startIndex,format(link(uri))),chipRuns(chip(richLinkProperties(uri)))'
+      + (configs.some((config) => config.readNotes) ? ',note' : '') + '))))',
   });
   return configs.map((config) => {
     const sheet = (response.sheets || []).find((item) => item.properties.title === config.sheetName);
@@ -110,11 +135,19 @@ function gridRows_(sheet, config) {
           text: value.formattedValue || '',
           url: value.hyperlink || (links.length === 1 ? links[0] : '') || richCellUrl_(null, formula),
         };
+        if (config.readNotes && value.note) cell.note = value.note;
+        if (config.readLinks && value.textFormatRuns?.length) {
+          cell.runs = value.textFormatRuns.map((run, index, runs) => ({
+            text: (value.formattedValue || '').slice(run.startIndex || 0, runs[index + 1]?.startIndex),
+            url: run.format?.link?.uri || '',
+          }));
+        }
         if (columnIndex < (config.mapColumnCount || 2)) {
           const mapUrl = mapChipUrl_(value);
           if (mapUrl) cell.mapUrl = mapUrl;
         }
-        if (config.readFirstColumnImages && columnIndex === 0) {
+        if ((config.readFirstColumnImages && columnIndex === 0) || columnIndex === config.imageColumn
+          || (Number.isInteger(config.imageStartColumn) && columnIndex >= config.imageStartColumn)) {
           const imageUrl = imageFormulaUrl_(formula);
           if (imageUrl) {
             rows[rowIndex][columnIndex] = { text: '', url: '', imageUrl, imageAlt: '' };
@@ -234,16 +267,56 @@ function imageFormulaUrl_(formula) {
 // Native CellImage URLs are unavailable in Sheets API. Share the overlay
 // between both readers, keeping IMAGE formula URLs when content URLs are absent.
 function applyFirstColumnImages_(rows, sheet, firstRow = 1) {
-  const images = sheet.getRange(firstRow, 1, rows.length, 1).getValues();
+  applyColumnImages_(rows, sheet, 0, firstRow);
+}
+
+function applyColumnImages_(rows, sheet, column, firstRow = 1, columnCount = 1) {
+  if (!rows.length) return;
+  const images = sheet.getRange(firstRow, column + 1, rows.length, columnCount).getValues();
   images.forEach((row, index) => {
-    const value = row[0];
-    if (!value || value.valueType !== SpreadsheetApp.ValueType.IMAGE) return;
-    const imageUrl = value.getContentUrl() || rows[index][0].imageUrl || '';
-    if (/^https?:\/\//i.test(imageUrl)) {
-      rows[index][0] = { text: '', url: '', imageUrl,
-        imageAlt: value.getAltTextDescription() || value.getAltTextTitle() || '' };
-    }
+    row.forEach((value, offset) => {
+      if (!value || typeof value.getContentUrl !== 'function') return;
+      const cell = rows[index][column + offset];
+      cell.imageRef = { sheet: sheet.getName(), row: firstRow + index, column: column + offset + 1 };
+      try {
+        const imageUrl = value.getContentUrl() || cell.imageUrl || '';
+        if (/^https?:\/\//i.test(imageUrl)) {
+          cell.text = '';
+          cell.url = '';
+          cell.imageUrl = imageUrl;
+          cell.imageAlt = value.getAltTextDescription() || value.getAltTextTitle() || '';
+        }
+      } catch (error) {
+        // Keep the reference so the browser can retry without losing the whole sheet.
+        console.warn('儲存格圖片讀取失敗：', sheet.getName(), firstRow + index, error.message || String(error));
+      }
+    });
   });
+}
+
+// Re-read native images only after a browser load failure. Never accepts a URL
+// from the client: the image must belong to an allowed cell in this workbook.
+function getTripImage(sheetName, rowNumber, columnNumber) {
+  if (typeof sheetName !== 'string' || !Number.isInteger(rowNumber) || rowNumber < 1) throw new Error('無效的圖片位置。');
+  const isTraffic = sheetName.trim().toLowerCase() === 'traffic';
+  if (!isTraffic && !/spot$/i.test(sheetName.trim())) throw new Error('不支援的圖片工作表。');
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(sheetName);
+  if (!sheet || rowNumber > sheet.getLastRow()) throw new Error('找不到圖片儲存格。');
+  const column = columnNumber === undefined ? (isTraffic ? 2 : 1) : columnNumber;
+  if (!Number.isInteger(column) || (isTraffic ? column < 2 || column > sheet.getLastColumn() : column !== 1)) throw new Error('無效的圖片欄位。');
+  const value = sheet.getRange(rowNumber, column).getValue();
+  if (!value || typeof value.getContentUrl !== 'function') throw new Error('此儲存格沒有儲存格內圖片。');
+  const url = value.getContentUrl();
+  // The content URL comes from CellImage, not from editable cell text.
+  if (!/^https:\/\//i.test(url)) throw new Error('無法取得圖片網址。');
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (response.getResponseCode() !== 200) throw new Error('原圖讀取失敗，請確認執行帳號可存取試算表。');
+  const blob = response.getBlob();
+  const mime = String(blob.getContentType() || '').split(';')[0].trim().toLowerCase();
+  if (!/^image\/(png|jpeg|gif|webp|bmp|avif)$/.test(mime)) throw new Error('圖片來源未回傳可顯示的圖片。');
+  const bytes = blob.getBytes();
+  if (bytes.length > 8 * 1024 * 1024) throw new Error('圖片超過 8 MB，請縮小圖片後再試。');
+  return { dataUrl: 'data:' + mime + ';base64,' + Utilities.base64Encode(bytes) };
 }
 
 function mapChipUrl_(value) {
@@ -255,7 +328,7 @@ function mapChipUrl_(value) {
 }
 
 function trimEmptyEdges_(rows) {
-  const hasData = (cell) => cell.text || cell.url || cell.mapUrl || cell.imageUrl;
+  const hasData = (cell) => cell.text || cell.url || cell.mapUrl || cell.imageUrl || cell.imageRef;
   rows.forEach((row) => {
     while (row.length && !hasData(row[row.length - 1])) row.pop();
   });
@@ -398,6 +471,7 @@ function readRichRange_(spreadsheet, config, sheet = spreadsheet.getSheetByName(
   const values = range.getDisplayValues();
   const richTextValues = range.getRichTextValues();
   const formulas = range.getFormulas();
+  const notes = config.readNotes ? range.getNotes() : [];
   const rangeRow = range.getRow();
   const rangeColumn = range.getColumn();
   const mergedCells = new Map();
@@ -436,6 +510,8 @@ function readRichRange_(spreadsheet, config, sheet = spreadsheet.getSheetByName(
             url: mergedUrl,
             mergeStartRow: firstRow,
             mergeEndRow: lastRow,
+            ...(config.readNotes ? { note: sourceRow >= 0 && sourceColumn >= 0
+              ? notes[sourceRow]?.[sourceColumn] || '' : mergedRange.getCell(1, 1).getNote() } : {}),
           });
         }
       }
@@ -443,7 +519,8 @@ function readRichRange_(spreadsheet, config, sheet = spreadsheet.getSheetByName(
   }
 
   const rows = values.map((row, rowIndex) => row.map((text, columnIndex) => {
-    if (config.readFirstColumnImages && rangeColumn + columnIndex === 1) {
+    if ((config.readFirstColumnImages && rangeColumn + columnIndex === 1) || columnIndex === config.imageColumn
+      || (Number.isInteger(config.imageStartColumn) && columnIndex >= config.imageStartColumn)) {
       const imageUrl = imageFormulaUrl_(formulas[rowIndex][columnIndex]);
       if (imageUrl) return { text: '', url: '', imageUrl, imageAlt: '' };
     }
@@ -454,9 +531,15 @@ function readRichRange_(spreadsheet, config, sheet = spreadsheet.getSheetByName(
     return {
       text: text || '',
       url: richCellUrl_(richText, formulas[rowIndex][columnIndex]),
+      ...(config.readNotes ? { note: notes[rowIndex]?.[columnIndex] || '' } : {}),
+      ...(config.readLinks && richText ? { runs: richText.getRuns().map((run) => ({ text: run.getText(), url: run.getLinkUrl() || '' })) } : {}),
     };
   }));
   if (config.readFirstColumnImages && rangeColumn === 1) applyFirstColumnImages_(rows, sheet, rangeRow);
+  if (Number.isInteger(config.imageColumn)) applyColumnImages_(rows, sheet, config.imageColumn, rangeRow);
+  if (Number.isInteger(config.imageStartColumn) && config.columnCount > config.imageStartColumn) {
+    applyColumnImages_(rows, sheet, config.imageStartColumn, rangeRow, config.columnCount - config.imageStartColumn);
+  }
   return rows;
 }
 

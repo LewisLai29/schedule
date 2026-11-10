@@ -42,12 +42,72 @@
       if (activeSpotImageDialog) activeSpotImageDialog();
     }
 
+    function sheetImageAttributes(cell) {
+      const ref = cell?.imageRef;
+      return ref ? ` data-image-sheet="${escapeHtml(ref.sheet)}" data-image-row="${escapeHtml(ref.row)}"${ref.column ? ` data-image-column="${escapeHtml(ref.column)}"` : ''}` : '';
+    }
+
+    function enableSheetImageRecovery(image, button, label) {
+      let pending = false;
+      let recovered = false;
+      let failed = false;
+      const status = () => button.querySelector('.sheet-image-status') || button.appendChild(Object.assign(document.createElement('span'), { className: 'sheet-image-status' }));
+      const fail = (error) => {
+        pending = false;
+        failed = true;
+        image.hidden = true;
+        button.removeAttribute('aria-busy');
+        status().textContent = '圖片載入失敗，點此重試';
+        button.title = error?.message || '請確認圖片與試算表存取權限。';
+      };
+      const recover = () => {
+        if (pending) return;
+        const sheet = image.dataset.imageSheet;
+        const row = Number(image.dataset.imageRow);
+        if (!sheet || !Number.isInteger(row) || !window.google?.script?.run) return fail();
+        pending = true;
+        if (label) label.hidden = true;
+        image.hidden = true;
+        button.setAttribute('aria-busy', 'true');
+        status().textContent = '正在重新讀取圖片…';
+        try {
+          google.script.run.withSuccessHandler((result) => {
+            if (!button.isConnected) return;
+            if (!/^data:image\/(png|jpeg|gif|webp|bmp|avif);base64,[A-Za-z0-9+/=]+$/.test(result?.dataUrl || '')) return fail();
+            recovered = true;
+            image.src = result.dataUrl;
+          }).withFailureHandler(fail).getTripImage(sheet, row, Number(image.dataset.imageColumn) || (sheet.trim().toLowerCase() === 'traffic' ? 2 : 1));
+        } catch (error) { fail(error); }
+      };
+      image.addEventListener('load', () => {
+        pending = failed = false;
+        image.hidden = false;
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('title');
+        button.querySelector('.sheet-image-status')?.remove();
+        if (label) label.hidden = false;
+      });
+      image.addEventListener('error', () => {
+        if (label) label.hidden = true;
+        if (recovered) fail();
+        else recover();
+      });
+      // Stop the normal preview handler until the thumbnail has actually loaded.
+      button.addEventListener('click', (event) => {
+        if (!image.naturalWidth || failed || pending) {
+          event.stopImmediatePropagation();
+          if (!pending) { recovered = false; recover(); }
+        }
+      }, true);
+      if (!image.getAttribute('src') || (image.complete && !image.naturalWidth)) recover();
+    }
+
     function spotGalleryMarkup(sheet, sheetIndex, title) {
       const imageCells = (sheet.rows || []).map((row) => row?.[0])
-        .filter((cell) => /^https?:\/\//i.test(cell?.imageUrl || ''));
+        .filter((cell) => /^https?:\/\//i.test(cell?.imageUrl || '') || cell?.imageRef);
       const galleryId = `spot-gallery-${sheetIndex}`;
       const images = imageCells
-        .map((cell, index) => `<button type="button" class="spot-image-slide" aria-haspopup="dialog" aria-label="${escapeHtml(title)} 圖片 ${index + 1}：放大查看"><img class="spot-sheet-image" src="${escapeHtml(cell.imageUrl)}" alt="${escapeHtml(cell.imageAlt || title)}" loading="lazy" decoding="async"></button>`)
+        .map((cell, index) => `<button type="button" class="spot-image-slide" aria-haspopup="dialog" aria-label="${escapeHtml(title)} 圖片 ${index + 1}：放大查看"><img class="spot-sheet-image"${cell.imageUrl ? ` src="${escapeHtml(cell.imageUrl)}"` : ''}${sheetImageAttributes(cell)} referrerpolicy="no-referrer" alt="${escapeHtml(cell.imageAlt || title)}" loading="lazy" decoding="async"></button>`)
         .join('');
       return `${images ? `<div class="spot-gallery">
                 <div class="spot-sheet-images" id="${galleryId}" role="region" aria-label="${escapeHtml(title)} 圖片集" tabindex="0">${images}</div>
@@ -62,7 +122,10 @@
         const track = gallery.querySelector('.spot-sheet-images');
         const slides = Array.from(track.children);
         const buttons = gallery.querySelectorAll('[data-gallery-step]');
-        slides.forEach((slide, index) => slide.addEventListener('click', () => openSpotImageDialog(slides, index)));
+        slides.forEach((slide, index) => {
+          enableSheetImageRecovery(slide.querySelector('img'), slide);
+          slide.addEventListener('click', () => openSpotImageDialog(slides, index));
+        });
         if (slides.length < 2) return;
         const currentIndex = () => {
           const left = track.getBoundingClientRect().left;

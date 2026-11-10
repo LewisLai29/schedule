@@ -1,4 +1,59 @@
   <script>
+    function trafficNoteMarkup(note, rows) {
+      const normalize = (value) => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+      const references = String(note || '').split(/\r?\n/).map(normalize).filter(Boolean);
+      const found = new Set();
+      return references.map((reference) => {
+        let row = rows.find((item) => cellText(item?.[0]) && normalize(cellText(item[0])) === reference);
+        // "traffic 1" can also address the first physical row, with A as its readable title.
+        const rowReference = reference.match(/^traffic\s+(\d+)$/);
+        if (!row && rowReference) row = rows[Number(rowReference[1]) - 1];
+        if (!row || !cellText(row[0]) || found.has(row)) return '';
+        found.add(row);
+        const title = cellText(row[0]);
+        const information = row.slice(1).map((cell) => {
+          if (!cell) return '';
+          const candidate = cellUrl(cell) || cellUrl({ url: cellText(cell) });
+          const imageUrl = cellUrl({ url: cell.imageUrl })
+            || (/\.(?:png|jpe?g|gif|webp|bmp|avif)(?:[?#].*)?$/i.test(candidate) ? candidate : '');
+          if (imageUrl || cell.imageRef) {
+            return `<button type="button" class="traffic-image" aria-haspopup="dialog" aria-label="${escapeHtml(title)}：放大查看圖片"><img${imageUrl ? ` src="${escapeHtml(imageUrl)}"` : ''}${sheetImageAttributes(cell)} referrerpolicy="no-referrer" alt="${escapeHtml(cell.imageAlt || title)}" loading="lazy" decoding="async"><span class="traffic-image-label" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></span></button>`;
+          }
+          const body = cell.runs?.some((run) => cellUrl(run))
+            ? cell.runs.map((run) => trafficTextMarkup(run.text, run.url)).join('')
+            : trafficTextMarkup(cellText(cell), cellUrl(cell));
+          return body ? `<div class="traffic-supplement">${body}</div>` : '';
+        }).join('');
+        return `<div class="schedule-traffic">
+          <div class="traffic-heading"><svg class="traffic-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="3" width="14" height="16" rx="3"/><path d="M5 8h14M5 14h14M8 19v2m8-2v2M8 5h8"/><circle cx="8" cy="16.5" r=".6"/><circle cx="16" cy="16.5" r=".6"/></svg><span>${escapeHtml(title)}</span></div>
+          <div class="traffic-actions"><span class="traffic-map-slot"></span>
+          <details class="traffic-notes"><summary>交通筆記</summary>
+          <div class="traffic-body">
+            ${information || '<p class="traffic-empty">尚未填寫照片或交通補充。</p>'}
+          </div>
+          </details></div>
+        </div>`;
+      }).join('');
+    }
+
+    function trafficTextMarkup(text, url) {
+      if (cellUrl({ url })) return linkMarkup({ text, url });
+      // Keep plain text and several pasted links readable without accepting HTML.
+      return String(text || '').split(/(https?:\/\/[^\s<>"']+)/gi).map((part) =>
+        /^https?:\/\//i.test(part) ? linkMarkup({ text: part, url: part }) : escapeHtml(part)).join('');
+    }
+
+    function initializeTrafficImages() {
+      document.querySelectorAll('.schedule-traffic').forEach((traffic) => {
+        const buttons = Array.from(traffic.querySelectorAll('.traffic-image'));
+        buttons.forEach((button, index) => {
+          if (buttons.length > 1) button.setAttribute('aria-label', `${button.getAttribute('aria-label')}（第 ${index + 1} 張，共 ${buttons.length} 張）`);
+          enableSheetImageRecovery(button.querySelector('img'), button, button.querySelector('.traffic-image-label'));
+          button.addEventListener('click', () => openSpotImageDialog(buttons, index));
+        });
+      });
+    }
+
     function formatTime(value) {
       const raw = String(value ?? '').trim();
       const match = raw.match(/^(\d{1,2}):(\d{2})/);
@@ -14,6 +69,7 @@
         time: match ? formatTime(`${match[1]}:${match[2]}`) : route ? '' : fallbackTime,
         text: route ? `${route[1]} → ${route[2]}` : text,
         isJourney: Boolean(route && !match),
+        note: cell?.note || '',
         url: cellUrl(cell)
       };
     }
@@ -36,7 +92,7 @@
       return /\b(?:hotel|inn)\b/i.test(String(value || ''));
     }
 
-    function scheduleCard(rows, column, index, totalColumns) {
+    function scheduleCard(rows, column, index, totalColumns, traffic = []) {
       const dateCell = rows[0]?.[column];
       const placeCell = rows[1]?.[column];
       const date = parseDate(cellText(dateCell));
@@ -72,6 +128,7 @@
 
       const eventMarkup = displayEvents.length
         ? `<div class="events">${displayEvents.map((event) => `
+            ${trafficNoteMarkup(event.note, traffic)}
             <div class="event${event.isAccommodation ? ' accommodation-event' : ''}${event.isJourney ? ' journey-event' : ''}">
               ${event.isAccommodation ? '' : `<div class="event-time">${escapeHtml(event.time)}</div>`}
               <div class="event-text">${event.isJourney ? '<span class="journey-icon" aria-hidden="true">✈</span>' : ''}${linkMarkup({ text: event.text, url: event.url })}</div>
@@ -175,17 +232,18 @@
       picker.scrollLeft = selected.offsetLeft - picker.offsetLeft;
     }
 
-    function renderSchedule(rows) {
+    function renderSchedule(rows, traffic = []) {
       const columns = 8;
       const firstDate = parseDate(cellText(rows[0]?.[1]));
       const lastDate = parseDate(cellText(rows[0]?.[columns]));
       document.getElementById('trip-dates').textContent = `${firstDate.full} — ${lastDate.full}`;
       document.getElementById('schedule-grid').innerHTML = Array.from(
         { length: columns },
-        (_, index) => scheduleCard(rows, index + 1, index + 1, columns)
+        (_, index) => scheduleCard(rows, index + 1, index + 1, columns, traffic)
       ).join('');
       enableScheduleAnimation();
       initializeScheduleNavigation();
+      initializeTrafficImages();
 
       const sidePlace = cellText(rows[1]?.[10]);
       const sideItems = [];
